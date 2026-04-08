@@ -1,0 +1,35 @@
+[
+  {
+    "clinicId": "clinic-001",
+    "name": "Gugulethu Community Health Centre",
+    "type": "chc",
+    "lat": -33.9734,
+    "lng": 18.5694,
+    "address": "Washington Street, Gugulethu, Cape Town, 7750",
+    "has_hiv_unit": true,
+    "has_tb_unit": true,
+    "phone": "021 637 1234"
+  },
+  {
+    "clinicId": "clinic-002",
+    "name": "Diepsloot Clinic",
+    "type": "clinic",
+    "lat": -25.9322,
+    "lng": 28.0106,
+    "address": "Extension 1, Diepsloot, Johannesburg, 2189",
+    "has_hiv_unit": true,
+    "has_tb_unit": false,
+    "phone": "011 531 5600"
+  },
+  {
+    "clinicId": "clinic-003",
+    "name": "Umlazi F Section Clinic",
+    "type": "clinic",
+    "lat": -29.9786,
+    "lng": 30.8869,
+    "address": "F Section, Umlazi, Durban, 4066",
+    "has_hiv_unit": false,
+    "has_tb_unit": true,
+    "phone": "031 906 1234"
+  }
+]
