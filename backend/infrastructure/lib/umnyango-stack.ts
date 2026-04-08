@@ -27,10 +27,17 @@ export class UmNyangoStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     const lambdaRoot = path.resolve(__dirname, '../../lambdas');
 
+    // Read model ID from CDK context or fall back to the inference profile ARN.
+    // Override at deploy time: cdk deploy --context bedrockModelId=<arn>
+    const bedrockModelId: string =
+      this.node.tryGetContext('bedrockModelId') ??
+      process.env.BEDROCK_MODEL_ID ??
+      'arn:aws:bedrock:us-east-1:022499005421:inference-profile/global.anthropic.claude-sonnet-4-6';
+
     const sharedEnv: Record<string, string> = {
       AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
       DYNAMODB_TABLE: sessionsTable.tableName,
-      BEDROCK_MODEL_ID: 'anthropic.claude-sonnet-4-5',
+      BEDROCK_MODEL_ID: bedrockModelId,
     };
 
     const sharedBundling: lambdaNodejs.BundlingOptions = {
@@ -95,14 +102,12 @@ export class UmNyangoStack extends cdk.Stack {
     // 4. IAM permissions for triage Lambda
     // -------------------------------------------------------------------------
 
-    // Bedrock — invoke any model in the account/region
+    // Bedrock — invoke the configured model (foundation model or inference profile)
     triageFn.addToRolePolicy(new iam.PolicyStatement({
       sid: 'BedrockInvokeModel',
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-      resources: [
-        `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-sonnet-4-5`,
-      ],
+      resources: [bedrockModelId],
     }));
 
     // Polly — synthesise speech

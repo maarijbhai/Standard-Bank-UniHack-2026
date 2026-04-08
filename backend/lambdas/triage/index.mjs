@@ -12,7 +12,8 @@ import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedroc
 import { PollyClient, SynthesizeSpeechCommand } from '@aws-sdk/client-polly';
 
 const REGION = process.env.AWS_REGION ?? 'us-east-1';
-const MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'anthropic.claude-sonnet-4-5';
+const MODEL_ID = process.env.BEDROCK_MODEL_ID;
+if (!MODEL_ID) throw new Error('BEDROCK_MODEL_ID environment variable is not set');
 
 const bedrock = new BedrockRuntimeClient({ region: REGION });
 const polly = new PollyClient({ region: REGION });

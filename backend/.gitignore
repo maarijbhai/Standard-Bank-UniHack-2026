@@ -1,0 +1,19 @@
+# Environment — never commit real secrets
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+lambdas/triage/node_modules/
+lambdas/clinics/node_modules/
+lambdas/session/node_modules/
+infrastructure/node_modules/
+
+# Build & CDK output
+infrastructure/dist/
+infrastructure/cdk.out/
+
+# OS
+.DS_Store
+Thumbs.db

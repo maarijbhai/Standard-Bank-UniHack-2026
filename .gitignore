@@ -1,6 +1,7 @@
-# Environment
+# Environment — never commit real secrets
 .env
 .env.local
+.env.*.local
 
 # Dependencies
 node_modules/
@@ -8,9 +9,12 @@ frontend/node_modules/
 backend/lambdas/triage/node_modules/
 backend/lambdas/clinics/node_modules/
 backend/lambdas/session/node_modules/
+backend/infrastructure/node_modules/
 
 # Build output
 frontend/dist/
+backend/infrastructure/dist/
+backend/infrastructure/cdk.out/
 
 # OS
 .DS_Store
