@@ -545,3 +545,52 @@
   font-size: 0.85rem;
   margin: 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Nearby clinics                                                       */
+/* ------------------------------------------------------------------ */
+.vt-clinics-loading,
+.vt-clinics-empty {
+  font-size: 0.85rem;
+  color: #888;
+  font-style: italic;
+  margin: 0.25rem 0 0;
+}
+
+.vt-clinic-item {
+  border-top: 1px solid #eee;
+  padding: 0.6rem 0 0;
+  margin-top: 0.6rem;
+}
+
+.vt-clinic-item:first-of-type {
+  border-top: none;
+  margin-top: 0.25rem;
+}
+
+.vt-clinic-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #1a1a1a;
+  margin: 0 0 0.15rem;
+}
+
+.vt-clinic-address {
+  font-size: 0.82rem;
+  color: #555;
+  margin: 0 0 0.25rem;
+  line-height: 1.4;
+}
+
+.vt-clinic-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.8rem;
+  color: #1a7a4a;
+  font-weight: 600;
+}
+
+/* Home remedy card */
+.vt-home-remedy {
+  border-left: 3px solid #27ae60;
+}

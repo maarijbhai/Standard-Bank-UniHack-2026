@@ -8,6 +8,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as location from 'aws-cdk-lib/aws-location';
 
 export class UmNyangoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -21,7 +22,17 @@ export class UmNyangoStack extends cdk.Stack {
       partitionKey: { name: 'sessionPin', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'expiresAt',
-      removalPolicy: cdk.RemovalPolicy.DESTROY, // safe for hackathon; change for prod
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // -------------------------------------------------------------------------
+    // 1b. Amazon Location Service — Place Index for clinic search
+    // -------------------------------------------------------------------------
+    const placeIndex = new location.CfnPlaceIndex(this, 'PlaceIndex', {
+      indexName:    'umnyango-place-index',
+      dataSource:   'Esri',
+      description:  'UmNyango clinic and facility search',
+      pricingPlan:  'RequestBasedUsage',
     });
 
     // -------------------------------------------------------------------------
@@ -40,6 +51,7 @@ export class UmNyangoStack extends cdk.Stack {
       AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
       DYNAMODB_TABLE: sessionsTable.tableName,
       BEDROCK_MODEL_ID: bedrockModelId,
+      LOCATION_PLACE_INDEX: placeIndex.indexName,
     };
 
     const sharedBundling: lambdaNodejs.BundlingOptions = {
@@ -210,6 +222,14 @@ export class UmNyangoStack extends cdk.Stack {
 
     // DynamoDB — clinics Lambda reads only (future clinic table)
     sessionsTable.grantReadData(clinicsFn);
+
+    // Location Service — clinics Lambda searches the place index
+    clinicsFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'LocationSearch',
+      effect: iam.Effect.ALLOW,
+      actions: ['geo:SearchPlaceIndexForText', 'geo:SearchPlaceIndexForPosition'],
+      resources: [`arn:aws:geo:${this.region}:${this.account}:place-index/${placeIndex.indexName}`],
+    }));
 
     // Translate Lambda — Amazon Translate + Polly
     translateFn.addToRolePolicy(new iam.PolicyStatement({

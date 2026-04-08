@@ -24,6 +24,15 @@ interface TriageResult {
   refer_emergency: boolean;
   needs_more_info: boolean;
   follow_up_question: string;
+  otc_medicines: string[];
+  home_remedy: string;
+}
+interface NearbyClinic {
+  name: string;
+  address: string;
+  distanceKm: number;
+  type: string;
+  phone: string;
 }
 interface HistoryEntry { role: 'user' | 'assistant'; content: string; }
 interface DebugEntry   { ts: string; msg: string; }
@@ -67,6 +76,8 @@ const CLINIC_LABEL: Record<TriageResult['clinic_type'], string> = {
 export default function VoiceTriage() {
   const [appState,         setAppState]         = useState<AppState>('idle');
   const [triage,           setTriage]           = useState<TriageResult | null>(null);
+  const [nearbyClinics,    setNearbyClinics]    = useState<NearbyClinic[]>([]);
+  const [clinicsLoading,   setClinicsLoading]   = useState(false);
   const [followUpQ,        setFollowUpQ]        = useState('');
   const [textInput,        setTextInput]        = useState('');
   const [interimText,      setInterimText]      = useState('');   // live Transcribe partials
@@ -161,6 +172,8 @@ export default function VoiceTriage() {
       } else {
         setTriage(t);
         setAppState('result');
+        // Fetch nearby clinics in background
+        fetchNearbyClinics(t.clinic_type);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -204,6 +217,40 @@ export default function VoiceTriage() {
       setTranslating(false);
     }
   }, [triage, log]);
+
+  // -------------------------------------------------------------------------
+  // Nearby clinics — fetches after triage result using browser geolocation
+  // -------------------------------------------------------------------------
+  const fetchNearbyClinics = useCallback(async (clinicType: string) => {
+    if (!navigator.geolocation) { log('Geolocation not supported'); return; }
+    setClinicsLoading(true);
+    setNearbyClinics([]);
+    log('Requesting geolocation…');
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        log(`Location: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+        try {
+          const res  = await fetch(
+            `${API_BASE}/clinics?lat=${latitude}&lng=${longitude}&type=${clinicType}`
+          );
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+          log(`Clinics found: ${data.clinics?.length ?? 0}`);
+          setNearbyClinics(data.clinics ?? []);
+        } catch (err: unknown) {
+          log(`CLINICS ERROR: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setClinicsLoading(false);
+        }
+      },
+      (err) => {
+        log(`Geolocation denied: ${err.message}`);
+        setClinicsLoading(false);
+      },
+      { timeout: 10000, maximumAge: 60000 }
+    );
+  }, [log]);
 
   // -------------------------------------------------------------------------
   // WebSocket — sends audio, receives partial + final transcript from Transcribe
@@ -417,6 +464,7 @@ export default function VoiceTriage() {
     detectedLangRef.current  = '';
     setAppState('idle');
     setTriage(null);
+    setNearbyClinics([]);
     setFollowUpQ('');
     setTextInput('');
     setInterimText('');
@@ -576,6 +624,43 @@ export default function VoiceTriage() {
                 🚨 Please go to the nearest emergency room now.
               </div>
             )}
+
+            {/* Medicines */}
+            {triage.otc_medicines?.length > 0 && (
+              <div className="vt-card">
+                <p className="vt-label">💊 Over-the-counter medicines</p>
+                <ul className="vt-benefits">
+                  {triage.otc_medicines.map(m => <li key={m}>{m}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {/* Home remedy */}
+            {triage.home_remedy && (
+              <div className="vt-card vt-home-remedy">
+                <p className="vt-label">🌿 Home remedy</p>
+                <p>{triage.home_remedy}</p>
+              </div>
+            )}
+
+            {/* Nearby clinics */}
+            <div className="vt-card">
+              <p className="vt-label">📍 Nearby {CLINIC_LABEL[triage.clinic_type]}s</p>
+              {clinicsLoading && <p className="vt-clinics-loading">Finding nearby facilities…</p>}
+              {!clinicsLoading && nearbyClinics.length === 0 && (
+                <p className="vt-clinics-empty">Allow location access to find nearby facilities.</p>
+              )}
+              {nearbyClinics.map((c, i) => (
+                <div key={i} className="vt-clinic-item">
+                  <p className="vt-clinic-name">{c.name}</p>
+                  <p className="vt-clinic-address">{c.address}</p>
+                  <div className="vt-clinic-meta">
+                    <span>{c.distanceKm} km away</span>
+                    {c.phone && <span>📞 {c.phone}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
             {renderTranslatePanel()}
             <button className="vt-reset-btn" onClick={handleReset}>Start over</button>
           </div>

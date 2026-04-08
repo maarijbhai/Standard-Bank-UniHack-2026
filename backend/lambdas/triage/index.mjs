@@ -76,7 +76,9 @@ RESPONSE RULES:
   "benefits": ["<applicable SA programme, written in ${langName}>"],
   "refer_emergency": true | false,
   "needs_more_info": true | false,
-  "follow_up_question": "<one short question in ${langName}, or empty string>"
+  "follow_up_question": "<one short question in ${langName}, or empty string>",
+  "otc_medicines": ["<over-the-counter medicine name and brief usage, in ${langName}>"],
+  "home_remedy": "<one practical home remedy if applicable, in ${langName}, or empty string>"
 }
 
 TRIAGE LOGIC:
@@ -84,6 +86,11 @@ TRIAGE LOGIC:
 - Chest pain, difficulty breathing, stroke symptoms, severe bleeding, loss of consciousness → urgency=emergency, refer_emergency=true, needs_more_info=false.
 - High fever (>39°C), severe headache, persistent vomiting, signs of infection → urgency=urgent.
 - Mild symptoms, no red flags → urgency=routine.
+
+MEDICINES RULES:
+- otc_medicines: list 1-3 relevant over-the-counter medicines available in SA pharmacies. Include generic name and brief usage. Only suggest medicines safe without a prescription.
+- For emergency cases: otc_medicines may be limited to symptom relief only (e.g. paracetamol for fever while seeking care).
+- home_remedy: one practical, safe home remedy if applicable (e.g. warm honey and lemon for sore throat). Empty string for emergencies or when not applicable.
 
 FOLLOW-UP RULES:
 - ONE question only, under 15 words, in ${langName}.
@@ -101,7 +108,7 @@ async function invokeBedrock(userText, history, langCode) {
   const messages = [...history, { role: 'user', content: userText }];
   const payload  = {
     anthropic_version: 'bedrock-2023-05-31',
-    max_tokens: 700,
+    max_tokens: 900,
     system:     buildSystemPrompt(langCode),
     messages,
   };
@@ -132,6 +139,8 @@ function validateTriage(obj) {
   if (typeof obj.refer_emergency !== 'boolean')   throw new Error('INVALID_REFER_EMERGENCY');
   if (typeof obj.needs_more_info !== 'boolean')   obj.needs_more_info = false;
   if (typeof obj.follow_up_question !== 'string') obj.follow_up_question = '';
+  if (!Array.isArray(obj.otc_medicines))          obj.otc_medicines = [];
+  if (typeof obj.home_remedy !== 'string')        obj.home_remedy = '';
 }
 
 // ---------------------------------------------------------------------------
