@@ -648,7 +648,9 @@ export default function VoiceTriage() {
               <p className="vt-label">📍 Nearby {CLINIC_LABEL[triage.clinic_type]}s</p>
               {clinicsLoading && <p className="vt-clinics-loading">Finding nearby facilities…</p>}
               {!clinicsLoading && nearbyClinics.length === 0 && (
-                <p className="vt-clinics-empty">Allow location access to find nearby facilities.</p>
+                <p className="vt-clinics-empty">
+                  {navigator.geolocation ? 'No facilities found nearby. Allow location access if prompted.' : 'Location access not available in this browser.'}
+                </p>
               )}
               {nearbyClinics.map((c, i) => (
                 <div key={i} className="vt-clinic-item">

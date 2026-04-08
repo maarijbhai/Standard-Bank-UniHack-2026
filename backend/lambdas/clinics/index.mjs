@@ -7,21 +7,24 @@
  * Privacy: never log coordinates or user identifiers.
  */
 
-import { LocationClient, SearchPlaceIndexForPositionCommand, SearchPlaceIndexForTextCommand } from '@aws-sdk/client-location';
+import {
+  LocationClient,
+  SearchPlaceIndexForTextCommand,
+} from '@aws-sdk/client-location';
 
 const REGION           = process.env.AWS_REGION ?? 'us-east-1';
 const PLACE_INDEX      = process.env.LOCATION_PLACE_INDEX ?? 'umnyango-place-index';
-const SEARCH_RADIUS_KM = 10;
+const SEARCH_RADIUS_KM = 15;
 const MAX_RESULTS      = 5;
 
 const location = new LocationClient({ region: REGION });
 
-// Clinic type → search terms for Location Service
+// Broader search terms that match Esri POI categories for SA
 const SEARCH_TERMS = {
-  emergency_room: ['emergency room', 'hospital emergency', 'casualty'],
-  chc:            ['community health centre', 'CHC', 'health centre'],
-  clinic:         ['clinic', 'health clinic', 'medical clinic'],
-  pharmacy:       ['pharmacy', 'chemist', 'dispensary'],
+  emergency_room: ['hospital', 'emergency hospital', 'casualty hospital'],
+  chc:            ['health centre', 'clinic', 'medical centre'],
+  clinic:         ['clinic', 'medical clinic', 'health clinic', 'doctor'],
+  pharmacy:       ['pharmacy', 'chemist', 'Clicks pharmacy', 'Dis-Chem', 'Medirite'],
 };
 
 export const handler = async (event, context) => {
@@ -44,15 +47,16 @@ export const handler = async (event, context) => {
     const clinicType = type ?? 'clinic';
     const terms      = SEARCH_TERMS[clinicType] ?? SEARCH_TERMS.clinic;
 
-    // Search for each term and merge results
     const allResults = [];
+    const seen       = new Set();
+
     for (const term of terms) {
       try {
         const result = await location.send(new SearchPlaceIndexForTextCommand({
-          IndexName:  PLACE_INDEX,
-          Text:       `${term} South Africa`,
-          BiasPosition: [longitude, latitude],
-          MaxResults: MAX_RESULTS,
+          IndexName:      PLACE_INDEX,
+          Text:           term,
+          BiasPosition:   [longitude, latitude],
+          MaxResults:     10,
           FilterCountries: ['ZAF'],
         }));
 
@@ -60,30 +64,39 @@ export const handler = async (event, context) => {
           const p = place.Place;
           if (!p?.Geometry?.Point) continue;
 
+          const label = p.Label ?? '';
+          if (seen.has(label)) continue;
+
           const [pLng, pLat] = p.Geometry.Point;
           const distKm = haversineKm(latitude, longitude, pLat, pLng);
 
           if (distKm <= SEARCH_RADIUS_KM) {
+            seen.add(label);
+            // Extract name (first part before comma) and address (rest)
+            const parts   = label.split(',');
+            const name    = parts[0]?.trim() ?? term;
+            const address = parts.slice(1).join(',').trim();
+
             allResults.push({
-              name:     p.Label?.split(',')[0] ?? term,
-              address:  p.Label ?? '',
-              lat:      pLat,
-              lng:      pLng,
+              name,
+              address,
+              lat:        pLat,
+              lng:        pLng,
               distanceKm: Math.round(distKm * 10) / 10,
-              type:     clinicType,
-              phone:    p.AddressNumber ?? '',
+              type:       clinicType,
+              phone:      '',
             });
           }
         }
       } catch (searchErr) {
-        console.error('location_search_error', { term, code: searchErr.name });
+        console.error('location_search_error', { term, code: searchErr.name, msg: searchErr.message });
       }
+
+      // Stop early if we have enough results
+      if (allResults.length >= MAX_RESULTS) break;
     }
 
-    // Deduplicate by name, sort by distance
-    const seen    = new Set();
     const clinics = allResults
-      .filter(c => { if (seen.has(c.name)) return false; seen.add(c.name); return true; })
       .sort((a, b) => a.distanceKm - b.distanceKm)
       .slice(0, MAX_RESULTS);
 
@@ -104,7 +117,6 @@ export const handler = async (event, context) => {
   }
 };
 
-// Haversine distance in km
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R    = 6371;
   const dLat = toRad(lat2 - lat1);

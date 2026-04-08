@@ -231,11 +231,15 @@ export class UmNyangoStack extends cdk.Stack {
       resources: [`arn:aws:geo:${this.region}:${this.account}:place-index/${placeIndex.indexName}`],
     }));
 
-    // Translate Lambda — Amazon Translate + Polly
+    // Translate Lambda — Amazon Translate + Polly + Comprehend (for auto source detection)
     translateFn.addToRolePolicy(new iam.PolicyStatement({
       sid: 'TranslateLambdaPerms',
       effect: iam.Effect.ALLOW,
-      actions: ['translate:TranslateText', 'polly:SynthesizeSpeech'],
+      actions: [
+        'translate:TranslateText',
+        'polly:SynthesizeSpeech',
+        'comprehend:DetectDominantLanguage',
+      ],
       resources: ['*'],
     }));
 
