@@ -499,3 +499,14 @@
   line-height: 1.55;
   color: #222;
 }
+
+/* Translate select — full width, no separate button */
+.vt-translate-select {
+  width: 100%;
+}
+
+.vt-translate-spinner {
+  font-size: 1.1rem;
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}

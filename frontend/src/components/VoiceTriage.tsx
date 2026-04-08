@@ -30,17 +30,8 @@ declare global {
 }
 
 // ---------------------------------------------------------------------------
-// Language config — mirrors backend LANGUAGE_CONFIG
+// Language config — translate targets only (SA + international)
 // ---------------------------------------------------------------------------
-const SA_LANGUAGES: { code: string; name: string; sttLang: string }[] = [
-  { code: 'en', name: 'English',   sttLang: 'en-ZA' },
-  { code: 'af', name: 'Afrikaans', sttLang: 'af-ZA' },
-  { code: 'zu', name: 'Zulu',      sttLang: 'zu-ZA' },
-  { code: 'xh', name: 'Xhosa',     sttLang: 'xh-ZA' },
-  { code: 'st', name: 'Sotho',     sttLang: 'st-ZA' },
-  { code: 'tn', name: 'Tswana',    sttLang: 'tn-ZA' },
-];
-
 const TRANSLATE_LANGUAGES = [
   { code: 'en', name: 'English' },
   { code: 'af', name: 'Afrikaans' },
@@ -82,7 +73,6 @@ export default function VoiceTriage() {
   const [debugLog,          setDebugLog]          = useState<DebugEntry[]>([]);
   const [showDebug,         setShowDebug]         = useState(false);
   const [inputMode,         setInputMode]         = useState<'voice' | 'text'>('voice');
-  const [voiceLang,         setVoiceLang]         = useState('en'); // STT language hint
   const [detectedLang,      setDetectedLang]      = useState('');
   const [detectedLangName,  setDetectedLangName]  = useState('');
   const [translateTarget,   setTranslateTarget]   = useState('');
@@ -226,12 +216,11 @@ export default function VoiceTriage() {
     const API = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     const rec = new API();
 
-    // Use the selected voice language as the STT hint
-    const sttLang = SA_LANGUAGES.find(l => l.code === voiceLang)?.sttLang ?? 'en-ZA';
+    // Always use en-ZA as the browser STT hint — Comprehend handles real language detection
     rec.continuous     = true;
     rec.interimResults = true;
-    rec.lang           = sttLang;
-    log(`STT lang set to: ${sttLang}`);
+    rec.lang           = 'en-ZA';
+    log('STT lang: en-ZA (Comprehend will detect actual language)');
 
     transcriptRef.current      = '';
     intentionalStopRef.current = false;
@@ -261,7 +250,7 @@ export default function VoiceTriage() {
     recognitionRef.current = rec;
     setAppState('listening');
     log('STT: start() called');
-  }, [log, submitText, voiceLang]);
+  }, [log, submitText]);
 
   const stopListening = useCallback(() => {
     const held = Date.now() - pressStartTimeRef.current;
@@ -300,7 +289,7 @@ export default function VoiceTriage() {
   }, [appState, stopListening]);
 
   const handleReset = () => {
-    historyRef.current  = [];
+    historyRef.current      = [];
     detectedLangRef.current = '';
     setAppState('idle');
     setTriage(null);
@@ -329,20 +318,6 @@ export default function VoiceTriage() {
 
       {inputMode === 'voice' ? (
         <div className="vt-speak-section">
-          {/* Language selector for STT hint */}
-          <div className="vt-lang-select-row">
-            <label className="vt-lang-label" htmlFor="voice-lang">Speaking in:</label>
-            <select
-              id="voice-lang"
-              className="vt-lang-select"
-              value={voiceLang}
-              onChange={e => setVoiceLang(e.target.value)}
-            >
-              {SA_LANGUAGES.map(l => (
-                <option key={l.code} value={l.code}>{l.name}</option>
-              ))}
-            </select>
-          </div>
           <button
             className={`vt-speak-btn ${appState === 'listening' ? 'vt-speak-btn--active' : ''}`}
             onMouseDown={onPressStart}
@@ -385,27 +360,29 @@ export default function VoiceTriage() {
       <p className="vt-translate-label">Translate output to:</p>
       <div className="vt-translate-row">
         <select
-          className="vt-lang-select"
+          className="vt-lang-select vt-translate-select"
           value={translateTarget}
-          onChange={e => setTranslateTarget(e.target.value)}
+          onChange={e => {
+            const lang = e.target.value;
+            setTranslateTarget(lang);
+            setTranslatedText('');
+            if (lang) handleTranslate(lang);
+          }}
           aria-label="Select translation language"
+          disabled={translating}
         >
           <option value="">— choose language —</option>
           {TRANSLATE_LANGUAGES.map(l => (
             <option key={l.code} value={l.code}>{l.name}</option>
           ))}
         </select>
-        <button
-          className="vt-submit-btn"
-          disabled={!translateTarget || translating}
-          onClick={() => handleTranslate(translateTarget)}
-        >
-          {translating ? '…' : 'Translate & Play'}
-        </button>
+        {translating && <span className="vt-translate-spinner" aria-label="Translating…">⏳</span>}
       </div>
       {translatedText && (
         <div className="vt-translated-text" aria-live="polite">
-          <p className="vt-label">Translation</p>
+          <p className="vt-label">
+            {TRANSLATE_LANGUAGES.find(l => l.code === translateTarget)?.name ?? ''} translation
+          </p>
           <p>{translatedText}</p>
         </div>
       )}
