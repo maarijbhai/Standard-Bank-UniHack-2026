@@ -131,14 +131,15 @@ export default function VoiceTriage() {
       setAppState('error');
     };
 
-    // onend fires when recognition stops for ANY reason (intentional or not)
+    // onend is the ONLY place we submit — it fires after all final result
+    // chunks have been delivered, whether stop() was intentional or the
+    // browser auto-stopped (e.g. silence timeout on mobile).
     recognition.onend = () => {
       log(`STT: recognition ended (intentional=${intentionalStopRef.current})`);
-      // If the browser stopped recognition before the user released the button,
-      // submit whatever we have so far
-      if (!intentionalStopRef.current && appState === 'listening') {
-        submitTranscript();
-      }
+      recognitionRef.current = null;
+      // Submit regardless of intentional/auto-stop — if transcript is empty
+      // submitTranscript will return to idle gracefully
+      submitTranscript();
     };
 
     recognition.start();
@@ -210,11 +211,10 @@ export default function VoiceTriage() {
     }
   }, [log]);
 
-  const stopListeningAndSubmit = useCallback(async () => {
+  const stopListeningAndSubmit = useCallback(() => {
     const heldMs = Date.now() - pressStartTimeRef.current;
     log(`Button released after ${heldMs}ms`);
 
-    // If released in under 400ms the user tapped accidentally — ignore
     if (heldMs < 400) {
       log('Hold too short (<400ms) — ignoring, returning to idle');
       intentionalStopRef.current = true;
@@ -225,11 +225,12 @@ export default function VoiceTriage() {
     }
 
     intentionalStopRef.current = true;
+    log('STT: stop() called by user — waiting for onend before submitting');
     recognitionRef.current?.stop();
-    recognitionRef.current = null;
-    log('STT: stop() called by user');
-    await submitTranscript();
-  }, [log, submitTranscript]);
+    // Do NOT call submitTranscript() here.
+    // onend fires after the browser has delivered all final result chunks,
+    // so submitTranscript() is called from there instead.
+  }, [log]);
 
   // -------------------------------------------------------------------------
   // Press handlers
