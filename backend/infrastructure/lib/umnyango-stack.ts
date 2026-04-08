@@ -50,6 +50,7 @@ export class UmNyangoStack extends cdk.Stack {
         '@aws-sdk/client-location',
         '@aws-sdk/client-transcribe',
         '@aws-sdk/client-translate',
+        '@aws-sdk/client-comprehend',
       ],
       format: lambdaNodejs.OutputFormat.ESM,
       target: 'node20',
@@ -99,8 +100,30 @@ export class UmNyangoStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------------------------
-    // 4. IAM permissions for triage Lambda
+    // 3d. Translate Lambda
     // -------------------------------------------------------------------------
+    const translateFn = new lambdaNodejs.NodejsFunction(this, 'TranslateFunction', {
+      functionName: 'umnyango-translate',
+      entry: path.join(lambdaRoot, 'translate/index.mjs'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
+      environment: { AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1' },
+      bundling: sharedBundling,
+    });
+
+    // -------------------------------------------------------------------------
+    // 4. IAM permissions
+    // -------------------------------------------------------------------------
+
+    // Comprehend — language detection
+    triageFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'ComprehendDetect',
+      effect: iam.Effect.ALLOW,
+      actions: ['comprehend:DetectDominantLanguage'],
+      resources: ['*'],
+    }));
 
     // Bedrock — invoke the configured model (foundation model or inference profile)
     // The inference profile ARN also requires bedrock:GetInferenceProfile
@@ -157,6 +180,14 @@ export class UmNyangoStack extends cdk.Stack {
     // DynamoDB — clinics Lambda reads only (future clinic table)
     sessionsTable.grantReadData(clinicsFn);
 
+    // Translate Lambda — Amazon Translate + Polly
+    translateFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'TranslateLambdaPerms',
+      effect: iam.Effect.ALLOW,
+      actions: ['translate:TranslateText', 'polly:SynthesizeSpeech'],
+      resources: ['*'],
+    }));
+
     // -------------------------------------------------------------------------
     // 5. API Gateway REST API
     // -------------------------------------------------------------------------
@@ -198,6 +229,13 @@ export class UmNyangoStack extends cdk.Stack {
     clinicsResource.addMethod(
       'GET',
       new apigateway.LambdaIntegration(clinicsFn, { proxy: true }),
+    );
+
+    // POST /translate
+    const translateResource = api.root.addResource('translate');
+    translateResource.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(translateFn, { proxy: true }),
     );
 
     // -------------------------------------------------------------------------
