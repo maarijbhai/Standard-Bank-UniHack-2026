@@ -158,8 +158,8 @@ async function transcribeAudio(audioBuffer, apigw, connectionId) {
   const command = new StartStreamTranscriptionCommand({
     IdentifyMultipleLanguages: true,
     LanguageOptions:           'en-ZA,af-ZA,zu-ZA',
-    MediaEncoding:             'ogg-opus',
-    MediaSampleRateHertz:      48000,
+    MediaEncoding:             'pcm',
+    MediaSampleRateHertz:      16000,
     AudioStream:               audioStream(),
   });
 

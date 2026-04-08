@@ -301,11 +301,39 @@ export default function VoiceTriage() {
       recorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         log(`Recording stopped — ${audioChunksRef.current.length} chunks`);
-        const blob        = new Blob(audioChunksRef.current, { type: mimeType });
-        const arrayBuffer = await blob.arrayBuffer();
-        const base64      = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-        log(`Audio encoded — ${base64.length} base64 chars`);
-        sendOverWebSocket(base64);
+
+        const webmBlob    = new Blob(audioChunksRef.current, { type: mimeType });
+
+        // Transcribe IdentifyMultipleLanguages requires PCM audio.
+        // Decode the WebM/Opus blob via Web Audio API and convert to 16-bit PCM.
+        try {
+          const arrayBuffer  = await webmBlob.arrayBuffer();
+          const audioCtx     = new AudioContext({ sampleRate: 16000 });
+          const decoded      = await audioCtx.decodeAudioData(arrayBuffer);
+          audioCtx.close();
+
+          // Mix down to mono, resample to 16kHz (AudioContext handles resampling)
+          const pcmFloat = decoded.getChannelData(0); // mono channel
+          const pcm16    = new Int16Array(pcmFloat.length);
+          for (let i = 0; i < pcmFloat.length; i++) {
+            const s = Math.max(-1, Math.min(1, pcmFloat[i]));
+            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+
+          // Convert Int16Array to base64
+          const bytes  = new Uint8Array(pcm16.buffer);
+          let binary   = '';
+          for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+          const base64 = btoa(binary);
+
+          log(`PCM encoded — ${base64.length} base64 chars (${pcmFloat.length} samples @ 16kHz)`);
+          sendOverWebSocket(base64);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`PCM conversion error: ${msg}`);
+          setErrorMsg(`Audio processing failed: ${msg}`);
+          setAppState('error');
+        }
       };
 
       recorder.start(100);
