@@ -44,7 +44,7 @@ type AppState = 'idle' | 'listening' | 'loading' | 'followup' | 'result' | 'erro
 const TRANSLATE_LANGUAGES = [
   { code: 'en', name: 'English' },
   { code: 'af', name: 'Afrikaans' },
-  { code: 'zu', name: 'Zulu' },
+  // zu (Zulu) not supported by Amazon Translate — omitted
   { code: 'xh', name: 'Xhosa' },
   { code: 'st', name: 'Sotho' },
   { code: 'tn', name: 'Tswana' },
@@ -576,12 +576,29 @@ export default function VoiceTriage() {
   return (
     <div className="vt-container">
       <header className="vt-header">
-        <h1 className="vt-title">UmNyango</h1>
-        <p className="vt-subtitle">Your wellness pathway</p>
+        <div className="vt-header-logo" aria-hidden="true">💙</div>
+        <h1 className="vt-title">ImpiloCare</h1>
+        <p className="vt-tagline">Dignity in Healthcare</p>
+        <p className="vt-subtitle">Continuity in Care</p>
+        <div className="vt-header-pills">
+          <span className="vt-header-pill">🔒 Privacy-First</span>
+          <span className="vt-header-pill">📶 Low-Data</span>
+          <span className="vt-header-pill">🇿🇦 Made for South Africa</span>
+        </div>
       </header>
 
       <main className="vt-main">
-        {(appState === 'idle' || appState === 'listening') && renderInputPanel()}
+        {(appState === 'idle' || appState === 'listening') && (
+          <>
+            {appState === 'idle' && (
+              <div className="vt-welcome">
+                <p className="vt-welcome-title">How are you feeling today?</p>
+                <p className="vt-welcome-sub">Describe your symptoms by voice or text — in any language.</p>
+              </div>
+            )}
+            {renderInputPanel()}
+          </>
+        )}
 
         {appState === 'loading' && (
           <div className="vt-loading" role="status" aria-live="polite">
