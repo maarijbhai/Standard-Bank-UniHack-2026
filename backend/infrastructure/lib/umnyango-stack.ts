@@ -1,0 +1,201 @@
+import * as path from 'path';
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as iam from 'aws-cdk-lib/aws-iam';
+
+export class UmNyangoStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // -------------------------------------------------------------------------
+    // 1. DynamoDB — sessions table
+    // -------------------------------------------------------------------------
+    const sessionsTable = new dynamodb.Table(this, 'SessionsTable', {
+      tableName: 'umnyango-sessions',
+      partitionKey: { name: 'sessionPin', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // safe for hackathon; change for prod
+    });
+
+    // -------------------------------------------------------------------------
+    // 2. Shared Lambda defaults
+    // -------------------------------------------------------------------------
+    const lambdaRoot = path.resolve(__dirname, '../../lambdas');
+
+    const sharedEnv: Record<string, string> = {
+      AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
+      DYNAMODB_TABLE: sessionsTable.tableName,
+      BEDROCK_MODEL_ID: 'anthropic.claude-sonnet-4-5',
+    };
+
+    const sharedBundling: lambdaNodejs.BundlingOptions = {
+      // Lambda ESM — externalise AWS SDK (provided by the runtime)
+      externalModules: [
+        '@aws-sdk/client-bedrock-runtime',
+        '@aws-sdk/client-polly',
+        '@aws-sdk/client-dynamodb',
+        '@aws-sdk/lib-dynamodb',
+        '@aws-sdk/client-location',
+        '@aws-sdk/client-transcribe',
+        '@aws-sdk/client-translate',
+      ],
+      format: lambdaNodejs.OutputFormat.ESM,
+      target: 'node20',
+      mainFields: ['module', 'main'],
+    };
+
+    // -------------------------------------------------------------------------
+    // 3a. Triage Lambda
+    // -------------------------------------------------------------------------
+    const triageFn = new lambdaNodejs.NodejsFunction(this, 'TriageFunction', {
+      functionName: 'umnyango-triage',
+      entry: path.join(lambdaRoot, 'triage/index.mjs'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+      environment: sharedEnv,
+      bundling: sharedBundling,
+    });
+
+    // -------------------------------------------------------------------------
+    // 3b. Clinics Lambda
+    // -------------------------------------------------------------------------
+    const clinicsFn = new lambdaNodejs.NodejsFunction(this, 'ClinicsFunction', {
+      functionName: 'umnyango-clinics',
+      entry: path.join(lambdaRoot, 'clinics/index.mjs'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
+      environment: sharedEnv,
+      bundling: sharedBundling,
+    });
+
+    // -------------------------------------------------------------------------
+    // 3c. Session Lambda
+    // -------------------------------------------------------------------------
+    const sessionFn = new lambdaNodejs.NodejsFunction(this, 'SessionFunction', {
+      functionName: 'umnyango-session',
+      entry: path.join(lambdaRoot, 'session/index.mjs'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 256,
+      environment: sharedEnv,
+      bundling: sharedBundling,
+    });
+
+    // -------------------------------------------------------------------------
+    // 4. IAM permissions for triage Lambda
+    // -------------------------------------------------------------------------
+
+    // Bedrock — invoke any model in the account/region
+    triageFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'BedrockInvokeModel',
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+      resources: [
+        `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-sonnet-4-5`,
+      ],
+    }));
+
+    // Polly — synthesise speech
+    triageFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'PollySynthesise',
+      effect: iam.Effect.ALLOW,
+      actions: ['polly:SynthesizeSpeech'],
+      resources: ['*'],
+    }));
+
+    // Transcribe — async transcription jobs (future use)
+    triageFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'TranscribeJobs',
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'transcribe:StartTranscriptionJob',
+        'transcribe:GetTranscriptionJob',
+      ],
+      resources: ['*'],
+    }));
+
+    // Translate — multilingual support (future use)
+    triageFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'TranslateText',
+      effect: iam.Effect.ALLOW,
+      actions: ['translate:TranslateText'],
+      resources: ['*'],
+    }));
+
+    // DynamoDB — triage Lambda reads/writes sessions (e.g. to persist condition category)
+    sessionsTable.grantReadWriteData(triageFn);
+
+    // DynamoDB — session Lambda creates session records
+    sessionsTable.grantReadWriteData(sessionFn);
+
+    // DynamoDB — clinics Lambda reads only (future clinic table)
+    sessionsTable.grantReadData(clinicsFn);
+
+    // -------------------------------------------------------------------------
+    // 5. API Gateway REST API
+    // -------------------------------------------------------------------------
+    const api = new apigateway.RestApi(this, 'UmNyangoApi', {
+      restApiName: 'umnyango-api',
+      description: 'UmNyango voice triage API',
+      deployOptions: {
+        stageName: 'prod',
+      },
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: apigateway.Cors.ALL_METHODS,
+        allowHeaders: [
+          'Content-Type',
+          'Authorization',
+          'X-Amz-Date',
+          'X-Api-Key',
+          'X-Amz-Security-Token',
+        ],
+      },
+    });
+
+    // POST /triage
+    const triageResource = api.root.addResource('triage');
+    triageResource.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(triageFn, { proxy: true }),
+    );
+
+    // POST /session
+    const sessionResource = api.root.addResource('session');
+    sessionResource.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(sessionFn, { proxy: true }),
+    );
+
+    // GET /clinics
+    const clinicsResource = api.root.addResource('clinics');
+    clinicsResource.addMethod(
+      'GET',
+      new apigateway.LambdaIntegration(clinicsFn, { proxy: true }),
+    );
+
+    // -------------------------------------------------------------------------
+    // 6. Outputs
+    // -------------------------------------------------------------------------
+    new cdk.CfnOutput(this, 'ApiGatewayUrl', {
+      description: 'API Gateway base URL — set this as VITE_API_URL in frontend/.env',
+      value: api.url,
+      exportName: 'UmNyangoApiUrl',
+    });
+
+    new cdk.CfnOutput(this, 'SessionsTableName', {
+      description: 'DynamoDB sessions table name',
+      value: sessionsTable.tableName,
+    });
+  }
+}
