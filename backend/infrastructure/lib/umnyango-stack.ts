@@ -103,11 +103,22 @@ export class UmNyangoStack extends cdk.Stack {
     // -------------------------------------------------------------------------
 
     // Bedrock — invoke the configured model (foundation model or inference profile)
+    // The inference profile ARN also requires bedrock:GetInferenceProfile
     triageFn.addToRolePolicy(new iam.PolicyStatement({
       sid: 'BedrockInvokeModel',
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-      resources: [bedrockModelId],
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:GetInferenceProfile',
+        'bedrock:ListInferenceProfiles',
+      ],
+      resources: [
+        bedrockModelId,
+        // Also allow the underlying foundation model the profile routes to
+        `arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5`,
+        `arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6`,
+      ],
     }));
 
     // Polly — synthesise speech

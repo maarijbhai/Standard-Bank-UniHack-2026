@@ -100,7 +100,20 @@ async function synthesiseSpeech(summary) {
     LanguageCode: 'en-ZA',
   });
 
-  const result = await polly.send(command);
+  let result;
+  try {
+    result = await polly.send(command);
+  } catch (pollyErr) {
+    // Ayanda neural may not be available in all regions — fall back to Joanna
+    console.error('polly_ayanda_failed', { code: pollyErr.name });
+    result = await polly.send(new SynthesizeSpeechCommand({
+      Text: summary,
+      OutputFormat: 'mp3',
+      VoiceId: 'Joanna',
+      Engine: 'neural',
+      LanguageCode: 'en-US',
+    }));
+  }
 
   // AudioStream is a readable stream — collect all chunks into a Buffer
   const chunks = [];
@@ -148,10 +161,13 @@ export const handler = async (event, context) => {
       requestId: context.awsRequestId,
       durationMs: Date.now() - startTime,
       errorCode: err.name,
-      // intentionally NOT logging err.message — may echo user input
+      errorMessage: err.message, // TEMP: exposed for debugging — remove before final deploy
     });
 
-    return httpResponse(500, { error: 'Triage service unavailable. Please try again.' });
+    return httpResponse(500, {
+      error: 'Triage service unavailable. Please try again.',
+      debug_error: err.message, // TEMP: remove before final deploy
+    });
   }
 };
 
