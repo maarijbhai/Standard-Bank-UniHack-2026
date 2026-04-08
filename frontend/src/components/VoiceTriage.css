@@ -539,3 +539,9 @@
   margin-bottom: 0.25rem;
   letter-spacing: 0.05em;
 }
+
+.vt-translate-error {
+  color: #c0392b;
+  font-size: 0.85rem;
+  margin: 0;
+}

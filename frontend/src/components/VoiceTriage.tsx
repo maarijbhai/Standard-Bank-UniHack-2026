@@ -79,6 +79,7 @@ export default function VoiceTriage() {
   const [detectedLangName, setDetectedLangName] = useState('');
   const [translateTarget,  setTranslateTarget]  = useState('');
   const [translatedText,   setTranslatedText]   = useState('');
+  const [translateError,   setTranslateError]   = useState('');
   const [translating,      setTranslating]      = useState(false);
 
   const historyRef        = useRef<HistoryEntry[]>([]);
@@ -177,6 +178,7 @@ export default function VoiceTriage() {
     const textToTranslate = [triage.summary, ...triage.benefits].join('. ');
     setTranslating(true);
     setTranslatedText('');
+    setTranslateError('');
     log(`Translating to ${targetLang}`);
     try {
       const res  = await fetch(`${API_BASE}/translate`, {
@@ -184,16 +186,20 @@ export default function VoiceTriage() {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ text: textToTranslate, targetLanguage: targetLang }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      const rawText = await res.text();
+      log(`Translate response: ${res.status} — ${rawText.slice(0, 150)}`);
+      const data = JSON.parse(rawText);
+      if (!res.ok) throw new Error(data.debug_error ?? data.error ?? `HTTP ${res.status}`);
+      if (!data.translatedText) throw new Error('No translatedText in response');
       setTranslatedText(data.translatedText);
-      log(`Translation received`);
       if (data.audio) {
         const audio = new Audio(`data:audio/mp3;base64,${data.audio}`);
         audio.play().catch(e => log(`Translate audio blocked: ${e.message}`));
       }
     } catch (err: unknown) {
-      log(`TRANSLATE ERROR: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`TRANSLATE ERROR: ${msg}`);
+      setTranslateError(msg);
     } finally {
       setTranslating(false);
     }
@@ -420,6 +426,7 @@ export default function VoiceTriage() {
     setDetectedLangName('');
     setTranslatedText('');
     setTranslateTarget('');
+    setTranslateError('');
     log('Reset');
   };
 
@@ -488,7 +495,13 @@ export default function VoiceTriage() {
         <select
           className="vt-lang-select vt-translate-select"
           value={translateTarget}
-          onChange={e => { const l = e.target.value; setTranslateTarget(l); setTranslatedText(''); if (l) handleTranslate(l); }}
+          onChange={e => {
+            const l = e.target.value;
+            setTranslateTarget(l);
+            setTranslatedText('');
+            setTranslateError('');
+            if (l) handleTranslate(l);
+          }}
           aria-label="Select translation language"
           disabled={translating}
         >
@@ -497,6 +510,9 @@ export default function VoiceTriage() {
         </select>
         {translating && <span className="vt-translate-spinner" aria-label="Translating…">⏳</span>}
       </div>
+      {translateError && (
+        <p className="vt-translate-error" role="alert">{translateError}</p>
+      )}
       {translatedText && (
         <div className="vt-translated-text" aria-live="polite">
           <p className="vt-label">{TRANSLATE_LANGUAGES.find(l => l.code === translateTarget)?.name ?? ''} translation</p>
