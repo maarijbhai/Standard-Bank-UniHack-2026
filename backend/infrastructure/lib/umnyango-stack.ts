@@ -132,15 +132,14 @@ export class UmNyangoStack extends cdk.Stack {
       memorySize: 512,
       environment: { AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1' },
       bundling: {
-        // Bundle the streaming clients — they are NOT in the Lambda runtime
+        // externalModules:[] tells esbuild to bundle everything inline.
+        // The streaming SDK packages are resolved from the Lambda's own
+        // node_modules (backend/lambdas/transcribe/node_modules) at build time.
+        // This avoids the npm ci step that caused the lock file mismatch error.
         externalModules: [],
         format: lambdaNodejs.OutputFormat.ESM,
         target: 'node20',
         mainFields: ['module', 'main'],
-        nodeModules: [
-          '@aws-sdk/client-transcribe-streaming',
-          '@aws-sdk/client-apigatewaymanagementapi',
-        ],
       },
     });
 
