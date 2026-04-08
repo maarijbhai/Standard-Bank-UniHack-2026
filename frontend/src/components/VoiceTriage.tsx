@@ -1,17 +1,12 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import './VoiceTriage.css';
 
-// Validate env at module load — surfaces misconfigured .env immediately in console
+// ---------------------------------------------------------------------------
+// Env validation — shown in UI debug panel
+// ---------------------------------------------------------------------------
 const API_BASE = (() => {
   const raw = import.meta.env.VITE_API_URL as string | undefined;
-  if (!raw || !raw.startsWith('http')) {
-    console.error(
-      '[UmNyango] VITE_API_URL is missing or invalid.\n' +
-      'Copy frontend/.env.example to frontend/.env and set VITE_API_URL to your API Gateway URL.'
-    );
-    return '';
-  }
-  // Strip accidental trailing slash so /triage always joins cleanly
+  if (!raw || !raw.startsWith('http')) return '';
   return raw.replace(/\/$/, '');
 })();
 
@@ -28,7 +23,11 @@ interface TriageResult {
 
 type AppState = 'idle' | 'listening' | 'loading' | 'result' | 'error';
 
-// Extend window for webkit prefix
+interface DebugEntry {
+  ts: string;
+  msg: string;
+}
+
 declare global {
   interface Window {
     webkitSpeechRecognition: new () => SpeechRecognition;
@@ -64,68 +63,93 @@ export default function VoiceTriage() {
   const [appState, setAppState] = useState<AppState>('idle');
   const [triage, setTriage] = useState<TriageResult | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [debugLog, setDebugLog] = useState<DebugEntry[]>([]);
+  const [showDebug, setShowDebug] = useState(true);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const transcriptRef = useRef('');
+  // Track whether we intentionally stopped recognition (vs browser auto-stop)
+  const intentionalStopRef = useRef(false);
 
-  // Warn in the UI if env is misconfigured
-  useEffect(() => {
-    if (!API_BASE) {
-      setErrorMsg('App is misconfigured: VITE_API_URL is not set. Check your frontend/.env file.');
-      setAppState('error');
-    }
+  const log = useCallback((msg: string) => {
+    const ts = new Date().toISOString().slice(11, 23);
+    console.log(`[UmNyango ${ts}] ${msg}`);
+    setDebugLog(prev => [...prev.slice(-19), { ts, msg }]);
   }, []);
 
+  // Env check on mount
+  useEffect(() => {
+    log(`API_BASE = "${API_BASE}"`);
+    log(`SpeechRecognition available: ${'webkitSpeechRecognition' in window || 'SpeechRecognition' in window}`);
+    if (!API_BASE) {
+      setErrorMsg('VITE_API_URL is not set or invalid. Check frontend/.env');
+      setAppState('error');
+    }
+  }, [log]);
+
   // -------------------------------------------------------------------------
-  // Speech recognition helpers
+  // Speech recognition
   // -------------------------------------------------------------------------
   const startListening = useCallback(() => {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      setErrorMsg('Speech recognition is not supported in this browser. Please use Chrome on Android.');
+      setErrorMsg('Speech recognition not supported. Use Chrome on Android/desktop.');
       setAppState('error');
       return;
     }
 
-    const SpeechRecognitionAPI =
-      window.SpeechRecognition ?? window.webkitSpeechRecognition;
-
+    const SpeechRecognitionAPI = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     const recognition = new SpeechRecognitionAPI();
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-ZA';
 
     transcriptRef.current = '';
+    intentionalStopRef.current = false;
+
+    recognition.onstart = () => log('STT: recognition started');
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const chunk = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
           transcriptRef.current += chunk + ' ';
-        } else {
-          interim += chunk;
+          log(`STT final chunk: "${chunk}"`);
         }
       }
-      // interim is intentionally discarded — we only send final transcript
-      void interim;
     };
 
-    recognition.onerror = () => {
-      setErrorMsg('Could not capture audio. Please check microphone permissions.');
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      log(`STT error: ${event.error}`);
+      if (event.error === 'no-speech') {
+        // non-fatal — user just didn't speak yet
+        return;
+      }
+      setErrorMsg(`Microphone error: ${event.error}. Check permissions.`);
       setAppState('error');
+    };
+
+    // onend fires when recognition stops for ANY reason (intentional or not)
+    recognition.onend = () => {
+      log(`STT: recognition ended (intentional=${intentionalStopRef.current})`);
+      // If the browser stopped recognition before the user released the button,
+      // submit whatever we have so far
+      if (!intentionalStopRef.current && appState === 'listening') {
+        submitTranscript();
+      }
     };
 
     recognition.start();
     recognitionRef.current = recognition;
     setAppState('listening');
-  }, []);
+    log('STT: start() called');
+  }, [log]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const stopListeningAndSubmit = useCallback(async () => {
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
-
+  const submitTranscript = useCallback(async () => {
     const text = transcriptRef.current.trim();
+    log(`Submitting transcript: "${text}" (length=${text.length})`);
+
     if (!text) {
+      log('Empty transcript — returning to idle');
       setAppState('idle');
       return;
     }
@@ -134,34 +158,65 @@ export default function VoiceTriage() {
     setTriage(null);
     setErrorMsg('');
 
+    const url = `${API_BASE}/triage`;
+    log(`POST ${url}`);
+
     try {
-      const res = await fetch(`${API_BASE}/triage`, {
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      log(`Response status: ${res.status} ${res.statusText}`);
 
-      const data = await res.json();
+      const rawText = await res.text();
+      log(`Response body (first 200 chars): ${rawText.slice(0, 200)}`);
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${rawText.slice(0, 120)}`);
+      }
+
+      let data: { triage: TriageResult; audio?: string };
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(`Invalid JSON from server: ${rawText.slice(0, 120)}`);
+      }
+
+      if (!data.triage) {
+        throw new Error(`Missing triage field in response: ${rawText.slice(0, 120)}`);
+      }
+
+      log(`Triage OK — urgency=${data.triage.urgency} clinic=${data.triage.clinic_type}`);
       setTriage(data.triage);
       setAppState('result');
 
-      // Auto-play Polly audio
       if (data.audio) {
+        log('Playing Polly audio');
         const audio = new Audio(`data:audio/mp3;base64,${data.audio}`);
-        audio.play().catch(() => {
-          // Autoplay blocked — user can replay manually (not a critical failure)
-        });
+        audio.play().catch((e) => log(`Audio autoplay blocked: ${e.message}`));
+      } else {
+        log('No audio in response');
       }
-    } catch {
-      setErrorMsg('Something went wrong. Please try again.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`FETCH ERROR: ${msg}`);
+      setErrorMsg(`Request failed: ${msg}`);
       setAppState('error');
     }
-  }, []);
+  }, [log]);
+
+  const stopListeningAndSubmit = useCallback(async () => {
+    intentionalStopRef.current = true;
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    log('STT: stop() called by user');
+    await submitTranscript();
+  }, [log, submitTranscript]);
 
   // -------------------------------------------------------------------------
-  // Touch / mouse handlers (hold-to-speak)
+  // Press handlers
   // -------------------------------------------------------------------------
   const handlePressStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
@@ -180,6 +235,7 @@ export default function VoiceTriage() {
     setTriage(null);
     setErrorMsg('');
     transcriptRef.current = '';
+    log('Reset to idle');
   };
 
   // -------------------------------------------------------------------------
@@ -193,7 +249,6 @@ export default function VoiceTriage() {
       </header>
 
       <main className="vt-main">
-        {/* Hold-to-speak button */}
         {(appState === 'idle' || appState === 'listening') && (
           <div className="vt-speak-section">
             <button
@@ -216,7 +271,6 @@ export default function VoiceTriage() {
           </div>
         )}
 
-        {/* Loading */}
         {appState === 'loading' && (
           <div className="vt-loading" role="status" aria-live="polite">
             <div className="vt-spinner" aria-hidden="true" />
@@ -224,7 +278,6 @@ export default function VoiceTriage() {
           </div>
         )}
 
-        {/* Result */}
         {appState === 'result' && triage && (
           <div className="vt-result" aria-live="polite">
             <div
@@ -234,48 +287,79 @@ export default function VoiceTriage() {
             >
               {URGENCY_LABEL[triage.urgency]}
             </div>
-
             <div className="vt-card">
               <p className="vt-summary">{triage.summary}</p>
             </div>
-
             <div className="vt-card">
               <p className="vt-label">Recommended facility</p>
               <p className="vt-value">{CLINIC_LABEL[triage.clinic_type]}</p>
             </div>
-
             {triage.benefits.length > 0 && (
               <div className="vt-card">
                 <p className="vt-label">You may qualify for</p>
                 <ul className="vt-benefits">
-                  {triage.benefits.map((b) => (
-                    <li key={b}>{b}</li>
-                  ))}
+                  {triage.benefits.map((b) => <li key={b}>{b}</li>)}
                 </ul>
               </div>
             )}
-
             {triage.refer_emergency && (
               <div className="vt-emergency-banner" role="alert">
                 🚨 Please go to the nearest emergency room now.
               </div>
             )}
-
-            <button className="vt-reset-btn" onClick={handleReset}>
-              Speak again
-            </button>
+            <button className="vt-reset-btn" onClick={handleReset}>Speak again</button>
           </div>
         )}
 
-        {/* Error */}
         {appState === 'error' && (
           <div className="vt-error" role="alert">
             <p>{errorMsg}</p>
-            <button className="vt-reset-btn" onClick={handleReset}>
-              Try again
-            </button>
+            <button className="vt-reset-btn" onClick={handleReset}>Try again</button>
           </div>
         )}
+
+        {/* ---------------------------------------------------------------- */}
+        {/* DEBUG PANEL — remove before production                           */}
+        {/* ---------------------------------------------------------------- */}
+        <div className="vt-debug">
+          <button
+            className="vt-debug-toggle"
+            onClick={() => setShowDebug(p => !p)}
+          >
+            🛠 Debug {showDebug ? '▲' : '▼'}
+          </button>
+          {showDebug && (
+            <div className="vt-debug-body">
+              <div className="vt-debug-row">
+                <span className="vt-debug-label">API_BASE</span>
+                <span className={`vt-debug-val ${!API_BASE ? 'vt-debug-err' : ''}`}>
+                  {API_BASE || '⚠ NOT SET'}
+                </span>
+              </div>
+              <div className="vt-debug-row">
+                <span className="vt-debug-label">State</span>
+                <span className="vt-debug-val">{appState}</span>
+              </div>
+              <div className="vt-debug-log">
+                {debugLog.length === 0
+                  ? <span className="vt-debug-empty">No events yet</span>
+                  : [...debugLog].reverse().map((e, i) => (
+                    <div key={i} className="vt-debug-entry">
+                      <span className="vt-debug-ts">{e.ts}</span>
+                      <span>{e.msg}</span>
+                    </div>
+                  ))
+                }
+              </div>
+              <button
+                className="vt-debug-clear"
+                onClick={() => setDebugLog([])}
+              >
+                Clear log
+              </button>
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );

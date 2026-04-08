@@ -205,3 +205,98 @@
 .vt-reset-btn:hover {
   background: #145e38;
 }
+
+/* ------------------------------------------------------------------ */
+/* DEBUG PANEL — remove before production                              */
+/* ------------------------------------------------------------------ */
+.vt-debug {
+  width: 100%;
+  max-width: 480px;
+  margin-top: 1.5rem;
+  border: 1px dashed #aaa;
+  border-radius: 8px;
+  font-family: monospace;
+  font-size: 0.75rem;
+  background: #1a1a1a;
+  color: #e0e0e0;
+  overflow: hidden;
+}
+
+.vt-debug-toggle {
+  width: 100%;
+  background: #2a2a2a;
+  color: #ccc;
+  border: none;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 0.75rem;
+}
+
+.vt-debug-body {
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.vt-debug-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.vt-debug-label {
+  color: #888;
+  min-width: 70px;
+  flex-shrink: 0;
+}
+
+.vt-debug-val {
+  color: #7ec8a0;
+  word-break: break-all;
+}
+
+.vt-debug-err {
+  color: #ff6b6b;
+  font-weight: bold;
+}
+
+.vt-debug-log {
+  max-height: 200px;
+  overflow-y: auto;
+  border-top: 1px solid #333;
+  padding-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.vt-debug-entry {
+  display: flex;
+  gap: 0.5rem;
+  line-height: 1.4;
+}
+
+.vt-debug-ts {
+  color: #666;
+  flex-shrink: 0;
+}
+
+.vt-debug-empty {
+  color: #555;
+  font-style: italic;
+}
+
+.vt-debug-clear {
+  align-self: flex-end;
+  background: #333;
+  color: #aaa;
+  border: none;
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+  font-family: monospace;
+}
