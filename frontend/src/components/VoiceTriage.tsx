@@ -216,7 +216,7 @@ export default function VoiceTriage() {
       ws.close();
       setErrorMsg('Transcription timed out. Please try again.');
       setAppState('error');
-    }, 28000);
+    }, 90000); // 90s — real-time PCM streaming takes ~recording duration + processing
 
     ws.onopen = () => {
       log('WS connected — sending audio in chunks sequentially');

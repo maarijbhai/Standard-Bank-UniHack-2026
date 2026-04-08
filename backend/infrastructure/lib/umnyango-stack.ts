@@ -128,7 +128,7 @@ export class UmNyangoStack extends cdk.Stack {
       entry: path.join(lambdaRoot, 'transcribe/index.mjs'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: cdk.Duration.seconds(29),
+      timeout: cdk.Duration.seconds(60), // needs time to stream PCM at real-time pace
       memorySize: 512,
       environment: { AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1' },
       bundling: {

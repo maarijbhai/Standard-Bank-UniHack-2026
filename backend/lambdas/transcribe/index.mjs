@@ -153,15 +153,22 @@ export const handler = async (event) => {
 };
 
 // ---------------------------------------------------------------------------
-// Transcribe Streaming — streams partial results back over WebSocket
+// Transcribe Streaming — streams PCM in real-time-paced chunks
 // ---------------------------------------------------------------------------
 async function transcribeAudio(audioBuffer, apigw, connectionId) {
-  const client     = new TranscribeStreamingClient({ region: REGION });
-  const CHUNK_SIZE = 32768;
+  const client = new TranscribeStreamingClient({ region: REGION });
+
+  // Transcribe Streaming expects audio delivered at real-time pace.
+  // PCM @ 16kHz, 16-bit = 32000 bytes/sec.
+  // Send 100ms chunks (3200 bytes) with ~100ms delay between each.
+  const BYTES_PER_CHUNK = 3200; // 100ms of 16kHz 16-bit mono PCM
+  const CHUNK_DELAY_MS  = 100;
 
   async function* audioStream() {
-    for (let offset = 0; offset < audioBuffer.length; offset += CHUNK_SIZE) {
-      yield { AudioEvent: { AudioChunk: audioBuffer.slice(offset, offset + CHUNK_SIZE) } };
+    for (let offset = 0; offset < audioBuffer.length; offset += BYTES_PER_CHUNK) {
+      yield { AudioEvent: { AudioChunk: audioBuffer.slice(offset, offset + BYTES_PER_CHUNK) } };
+      // Pace the delivery to simulate real-time audio
+      await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
     }
   }
 
