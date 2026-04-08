@@ -1,5 +1,19 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import './VoiceTriage.css';
+
+// Validate env at module load — surfaces misconfigured .env immediately in console
+const API_BASE = (() => {
+  const raw = import.meta.env.VITE_API_URL as string | undefined;
+  if (!raw || !raw.startsWith('http')) {
+    console.error(
+      '[UmNyango] VITE_API_URL is missing or invalid.\n' +
+      'Copy frontend/.env.example to frontend/.env and set VITE_API_URL to your API Gateway URL.'
+    );
+    return '';
+  }
+  // Strip accidental trailing slash so /triage always joins cleanly
+  return raw.replace(/\/$/, '');
+})();
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,6 +67,14 @@ export default function VoiceTriage() {
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const transcriptRef = useRef('');
+
+  // Warn in the UI if env is misconfigured
+  useEffect(() => {
+    if (!API_BASE) {
+      setErrorMsg('App is misconfigured: VITE_API_URL is not set. Check your frontend/.env file.');
+      setAppState('error');
+    }
+  }, []);
 
   // -------------------------------------------------------------------------
   // Speech recognition helpers
@@ -113,7 +135,7 @@ export default function VoiceTriage() {
     setErrorMsg('');
 
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/triage`, {
+      const res = await fetch(`${API_BASE}/triage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
