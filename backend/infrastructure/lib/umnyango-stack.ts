@@ -5,6 +5,8 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as apigwv2integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as iam from 'aws-cdk-lib/aws-iam';
 
 export class UmNyangoStack extends cdk.Stack {
@@ -49,6 +51,8 @@ export class UmNyangoStack extends cdk.Stack {
         '@aws-sdk/lib-dynamodb',
         '@aws-sdk/client-location',
         '@aws-sdk/client-transcribe',
+        '@aws-sdk/client-transcribe-streaming',
+        '@aws-sdk/client-apigatewaymanagementapi',
         '@aws-sdk/client-translate',
         '@aws-sdk/client-comprehend',
       ],
@@ -109,6 +113,20 @@ export class UmNyangoStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: cdk.Duration.seconds(15),
       memorySize: 256,
+      environment: { AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1' },
+      bundling: sharedBundling,
+    });
+
+    // -------------------------------------------------------------------------
+    // 3e. Transcribe Lambda (WebSocket handler)
+    // -------------------------------------------------------------------------
+    const transcribeFn = new lambdaNodejs.NodejsFunction(this, 'TranscribeFunction', {
+      functionName: 'umnyango-transcribe',
+      entry: path.join(lambdaRoot, 'transcribe/index.mjs'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(29), // WebSocket max integration timeout
+      memorySize: 512,
       environment: { AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1' },
       bundling: sharedBundling,
     });
@@ -188,6 +206,46 @@ export class UmNyangoStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    // Transcribe Lambda — Transcribe Streaming + manage WebSocket connections
+    transcribeFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'TranscribeStreamingPerms',
+      effect: iam.Effect.ALLOW,
+      actions: ['transcribe:StartStreamTranscription'],
+      resources: ['*'],
+    }));
+
+    // -------------------------------------------------------------------------
+    // 5. WebSocket API (for real-time Transcribe streaming)
+    // -------------------------------------------------------------------------
+    const wsApi = new apigwv2.WebSocketApi(this, 'TranscribeWsApi', {
+      apiName: 'umnyango-transcribe-ws',
+      connectRouteOptions: {
+        integration: new apigwv2integrations.WebSocketLambdaIntegration('WsConnect', transcribeFn),
+      },
+      disconnectRouteOptions: {
+        integration: new apigwv2integrations.WebSocketLambdaIntegration('WsDisconnect', transcribeFn),
+      },
+    });
+
+    // Custom route: action = "transcribe"
+    wsApi.addRoute('transcribe', {
+      integration: new apigwv2integrations.WebSocketLambdaIntegration('WsTranscribe', transcribeFn),
+    });
+
+    const wsStage = new apigwv2.WebSocketStage(this, 'TranscribeWsStage', {
+      webSocketApi: wsApi,
+      stageName:    'prod',
+      autoDeploy:   true,
+    });
+
+    // Grant transcribe Lambda permission to post back to WebSocket connections
+    transcribeFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'ApiGwManageConnections',
+      effect: iam.Effect.ALLOW,
+      actions: ['execute-api:ManageConnections'],
+      resources: [`arn:aws:execute-api:${this.region}:${this.account}:${wsApi.apiId}/${wsStage.stageName}/POST/@connections/*`],
+    }));
+
     // -------------------------------------------------------------------------
     // 5. API Gateway REST API
     // -------------------------------------------------------------------------
@@ -250,6 +308,12 @@ export class UmNyangoStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SessionsTableName', {
       description: 'DynamoDB sessions table name',
       value: sessionsTable.tableName,
+    });
+
+    new cdk.CfnOutput(this, 'TranscribeWsUrl', {
+      description: 'WebSocket URL for Transcribe streaming — set as VITE_TRANSCRIBE_WS_URL in frontend/.env',
+      value: wsStage.url,
+      exportName: 'UmNyangoTranscribeWsUrl',
     });
   }
 }

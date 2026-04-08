@@ -7,6 +7,12 @@ const API_BASE = (() => {
   return raw.replace(/\/$/, '');
 })();
 
+const WS_URL = (() => {
+  const raw = import.meta.env.VITE_TRANSCRIBE_WS_URL as string | undefined;
+  if (!raw || !raw.startsWith('wss://')) return '';
+  return raw.replace(/\/$/, '');
+})();
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -24,10 +30,6 @@ interface HistoryEntry  { role: 'user' | 'assistant'; content: string; }
 interface DebugEntry    { ts: string; msg: string; }
 
 type AppState = 'idle' | 'listening' | 'loading' | 'followup' | 'result' | 'error';
-
-declare global {
-  interface Window { webkitSpeechRecognition: new () => SpeechRecognition; }
-}
 
 // ---------------------------------------------------------------------------
 // Language config — translate targets only (SA + international)
@@ -80,10 +82,10 @@ export default function VoiceTriage() {
   const [translating,       setTranslating]       = useState(false);
 
   const historyRef         = useRef<HistoryEntry[]>([]);
-  const detectedLangRef    = useRef(''); // stable ref for multi-turn
-  const recognitionRef     = useRef<SpeechRecognition | null>(null);
-  const transcriptRef      = useRef('');
-  const intentionalStopRef = useRef(false);
+  const detectedLangRef    = useRef('');
+  const mediaRecorderRef   = useRef<MediaRecorder | null>(null);
+  const audioChunksRef     = useRef<Blob[]>([]);
+  const wsRef              = useRef<WebSocket | null>(null);
   const pressStartTimeRef  = useRef(0);
 
   const log = useCallback((msg: string) => {
@@ -94,7 +96,9 @@ export default function VoiceTriage() {
 
   useEffect(() => {
     log(`API_BASE = "${API_BASE}"`);
+    log(`WS_URL = "${WS_URL}"`);
     if (!API_BASE) { setErrorMsg('VITE_API_URL not set. Check frontend/.env'); setAppState('error'); }
+    else if (!WS_URL) { log('WARN: VITE_TRANSCRIBE_WS_URL not set — voice input will be unavailable'); }
   }, [log]);
 
   // -------------------------------------------------------------------------
@@ -205,51 +209,113 @@ export default function VoiceTriage() {
   }, [triage, log]);
 
   // -------------------------------------------------------------------------
-  // Speech recognition
+  // Voice recording — MediaRecorder → WebSocket → Transcribe Streaming
   // -------------------------------------------------------------------------
-  const startListening = useCallback(() => {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      setErrorMsg('Speech recognition not supported. Use Chrome.');
+  const startListening = useCallback(async () => {
+    if (!WS_URL) {
+      setErrorMsg('VITE_TRANSCRIBE_WS_URL not set. Check frontend/.env');
       setAppState('error');
       return;
     }
-    const API = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    const rec = new API();
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setErrorMsg('Microphone access not supported in this browser.');
+      setAppState('error');
+      return;
+    }
 
-    // Always use en-ZA as the browser STT hint — Comprehend handles real language detection
-    rec.continuous     = true;
-    rec.interimResults = true;
-    rec.lang           = 'en-ZA';
-    log('STT lang: en-ZA (Comprehend will detect actual language)');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      log('Mic access granted');
 
-    transcriptRef.current      = '';
-    intentionalStopRef.current = false;
-    pressStartTimeRef.current  = Date.now();
+      // Prefer ogg/opus — matches Transcribe MediaEncoding: ogg-opus
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
 
-    rec.onstart  = () => log('STT: started');
-    rec.onresult = (e: SpeechRecognitionEvent) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const chunk = e.results[i][0].transcript.trim();
-        if (e.results[i].isFinal && chunk.length > 0) {
-          transcriptRef.current += chunk + ' ';
-          log(`STT chunk: "${chunk}"`);
+      const recorder = new MediaRecorder(stream, { mimeType });
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        // Stop all mic tracks
+        stream.getTracks().forEach(t => t.stop());
+        log(`Recording stopped — ${audioChunksRef.current.length} chunks`);
+
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        const arrayBuffer = await blob.arrayBuffer();
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+        log(`Audio encoded — ${base64.length} base64 chars`);
+
+        // Send over WebSocket
+        sendOverWebSocket(base64);
+      };
+
+      recorder.start(100); // collect chunks every 100ms
+      mediaRecorderRef.current = recorder;
+      pressStartTimeRef.current = Date.now();
+      setAppState('listening');
+      log('MediaRecorder started');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`Mic error: ${msg}`);
+      setErrorMsg(`Microphone error: ${msg}`);
+      setAppState('error');
+    }
+  }, [log]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sendOverWebSocket = useCallback((audioBase64: string) => {
+    setAppState('loading');
+    log('Connecting WebSocket…');
+
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      log('WS connected — sending audio');
+      ws.send(JSON.stringify({ action: 'transcribe', audio: audioBase64 }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        log(`WS message: type=${msg.type}`);
+
+        if (msg.type === 'transcript') {
+          log(`Transcript: "${msg.transcript}" lang=${msg.detectedLanguage}`);
+          ws.close();
+          wsRef.current = null;
+
+          // Store detected language for Comprehend override on follow-up turns
+          if (msg.detectedLanguage) {
+            const langCode = msg.detectedLanguage.split('-')[0]; // "af-ZA" → "af"
+            detectedLangRef.current = langCode;
+          }
+
+          submitText(msg.transcript);
+        } else if (msg.type === 'error') {
+          log(`WS error from server: ${msg.message}`);
+          setErrorMsg(msg.message ?? 'Transcription failed.');
+          setAppState('error');
+          ws.close();
         }
+      } catch {
+        log('WS: failed to parse message');
       }
     };
-    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
-      log(`STT error: ${e.error}`);
-      if (e.error !== 'no-speech') { setErrorMsg(`Mic error: ${e.error}`); setAppState('error'); }
-    };
-    rec.onend = () => {
-      log(`STT: ended (intentional=${intentionalStopRef.current})`);
-      recognitionRef.current = null;
-      submitText(transcriptRef.current.trim());
+
+    ws.onerror = () => {
+      log('WS connection error');
+      setErrorMsg('Could not connect to transcription service.');
+      setAppState('error');
     };
 
-    rec.start();
-    recognitionRef.current = rec;
-    setAppState('listening');
-    log('STT: start() called');
+    ws.onclose = () => {
+      log('WS closed');
+      wsRef.current = null;
+    };
   }, [log, submitText]);
 
   const stopListening = useCallback(() => {
@@ -257,15 +323,15 @@ export default function VoiceTriage() {
     log(`Released after ${held}ms`);
     if (held < 400) {
       log('Too short — ignoring');
-      intentionalStopRef.current = true;
-      recognitionRef.current?.stop();
-      recognitionRef.current = null;
+      mediaRecorderRef.current?.stop();
+      mediaRecorderRef.current = null;
+      audioChunksRef.current = [];
       setAppState('idle');
       return;
     }
-    intentionalStopRef.current = true;
-    log('STT: stop() — waiting for onend');
-    recognitionRef.current?.stop();
+    log('Stopping recorder — will send audio on onstop');
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
   }, [log]);
 
   const handleTextSubmit = useCallback((e: React.FormEvent) => {
@@ -279,7 +345,7 @@ export default function VoiceTriage() {
   const onPressStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     if (appState === 'loading') return;
-    startListening();
+    void startListening();
   }, [appState, startListening]);
 
   const onPressEnd = useCallback((e: React.MouseEvent | React.TouchEvent) => {
@@ -289,6 +355,11 @@ export default function VoiceTriage() {
   }, [appState, stopListening]);
 
   const handleReset = () => {
+    wsRef.current?.close();
+    wsRef.current = null;
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
     historyRef.current      = [];
     detectedLangRef.current = '';
     setAppState('idle');
@@ -300,7 +371,6 @@ export default function VoiceTriage() {
     setDetectedLangName('');
     setTranslatedText('');
     setTranslateTarget('');
-    transcriptRef.current = '';
     log('Reset');
   };
 
@@ -464,6 +534,7 @@ export default function VoiceTriage() {
           {showDebug && (
             <div className="vt-debug-body">
               <div className="vt-debug-row"><span className="vt-debug-label">API_BASE</span><span className={`vt-debug-val ${!API_BASE ? 'vt-debug-err' : ''}`}>{API_BASE || '⚠ NOT SET'}</span></div>
+              <div className="vt-debug-row"><span className="vt-debug-label">WS_URL</span><span className={`vt-debug-val ${!WS_URL ? 'vt-debug-err' : ''}`}>{WS_URL ? '✓ set' : '⚠ NOT SET'}</span></div>
               <div className="vt-debug-row"><span className="vt-debug-label">State</span><span className="vt-debug-val">{appState}</span></div>
               <div className="vt-debug-row"><span className="vt-debug-label">Lang</span><span className="vt-debug-val">{detectedLangName || '—'} ({detectedLang || '—'})</span></div>
               <div className="vt-debug-row"><span className="vt-debug-label">History</span><span className="vt-debug-val">{historyRef.current.length} turns</span></div>
