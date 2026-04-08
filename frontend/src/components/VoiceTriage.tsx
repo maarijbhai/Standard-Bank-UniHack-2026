@@ -71,6 +71,7 @@ export default function VoiceTriage() {
   const [triage,            setTriage]            = useState<TriageResult | null>(null);
   const [followUpQ,         setFollowUpQ]         = useState('');
   const [textInput,         setTextInput]         = useState('');
+  const [interimText,       setInterimText]       = useState(''); // live transcript while speaking
   const [errorMsg,          setErrorMsg]          = useState('');
   const [debugLog,          setDebugLog]          = useState<DebugEntry[]>([]);
   const [showDebug,         setShowDebug]         = useState(false);
@@ -86,6 +87,7 @@ export default function VoiceTriage() {
   const mediaRecorderRef   = useRef<MediaRecorder | null>(null);
   const audioChunksRef     = useRef<Blob[]>([]);
   const wsRef              = useRef<WebSocket | null>(null);
+  const wsTimeoutRef       = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pressStartTimeRef  = useRef(0);
 
   const log = useCallback((msg: string) => {
@@ -227,7 +229,31 @@ export default function VoiceTriage() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       log('Mic access granted');
 
-      // Prefer ogg/opus — matches Transcribe MediaEncoding: ogg-opus
+      // ── Live interim display via browser STT (display only, not used for submission) ──
+      setInterimText('');
+      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        const SpeechAPI = (window as Window & { SpeechRecognition?: new () => SpeechRecognition }).SpeechRecognition
+          ?? (window as Window & { webkitSpeechRecognition?: new () => SpeechRecognition }).webkitSpeechRecognition;
+        if (SpeechAPI) {
+          const interim = new SpeechAPI();
+          interim.continuous     = true;
+          interim.interimResults = true;
+          interim.lang           = 'en-ZA';
+          interim.onresult = (e: SpeechRecognitionEvent) => {
+            let text = '';
+            for (let i = 0; i < e.results.length; i++) {
+              text += e.results[i][0].transcript;
+            }
+            setInterimText(text);
+          };
+          interim.onerror = () => { /* silent — display only */ };
+          interim.onend   = () => { /* silent */ };
+          try { interim.start(); } catch { /* ignore */ }
+          // Stop interim recognition when recorder stops
+          stream.getTracks()[0].addEventListener('ended', () => { try { interim.stop(); } catch { /* ignore */ } });
+        }
+      }
+
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
@@ -240,21 +266,19 @@ export default function VoiceTriage() {
       };
 
       recorder.onstop = async () => {
-        // Stop all mic tracks
         stream.getTracks().forEach(t => t.stop());
+        setInterimText('');
         log(`Recording stopped — ${audioChunksRef.current.length} chunks`);
 
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        const blob        = new Blob(audioChunksRef.current, { type: mimeType });
         const arrayBuffer = await blob.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+        const base64      = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
         log(`Audio encoded — ${base64.length} base64 chars`);
-
-        // Send over WebSocket
         sendOverWebSocket(base64);
       };
 
-      recorder.start(100); // collect chunks every 100ms
-      mediaRecorderRef.current = recorder;
+      recorder.start(100);
+      mediaRecorderRef.current  = recorder;
       pressStartTimeRef.current = Date.now();
       setAppState('listening');
       log('MediaRecorder started');
@@ -273,24 +297,32 @@ export default function VoiceTriage() {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
+    // Safety timeout — if no response in 28s, surface an error
+    wsTimeoutRef.current = setTimeout(() => {
+      log('WS timeout — no response from transcribe Lambda');
+      ws.close();
+      setErrorMsg('Transcription timed out. Please try again.');
+      setAppState('error');
+    }, 28000);
+
     ws.onopen = () => {
       log('WS connected — sending audio');
       ws.send(JSON.stringify({ action: 'transcribe', audio: audioBase64 }));
     };
 
     ws.onmessage = (event) => {
+      if (wsTimeoutRef.current) { clearTimeout(wsTimeoutRef.current); wsTimeoutRef.current = null; }
       try {
         const msg = JSON.parse(event.data);
         log(`WS message: type=${msg.type}`);
 
         if (msg.type === 'transcript') {
-          log(`Transcript: "${msg.transcript}" lang=${msg.detectedLanguage}`);
+          log(`Transcript received, lang=${msg.detectedLanguage}`);
           ws.close();
           wsRef.current = null;
 
-          // Store detected language for Comprehend override on follow-up turns
           if (msg.detectedLanguage) {
-            const langCode = msg.detectedLanguage.split('-')[0]; // "af-ZA" → "af"
+            const langCode = msg.detectedLanguage.split('-')[0];
             detectedLangRef.current = langCode;
           }
 
@@ -307,8 +339,9 @@ export default function VoiceTriage() {
     };
 
     ws.onerror = () => {
+      if (wsTimeoutRef.current) { clearTimeout(wsTimeoutRef.current); wsTimeoutRef.current = null; }
       log('WS connection error');
-      setErrorMsg('Could not connect to transcription service.');
+      setErrorMsg('Could not connect to transcription service. Check VITE_TRANSCRIBE_WS_URL.');
       setAppState('error');
     };
 
@@ -355,6 +388,7 @@ export default function VoiceTriage() {
   }, [appState, stopListening]);
 
   const handleReset = () => {
+    if (wsTimeoutRef.current) { clearTimeout(wsTimeoutRef.current); wsTimeoutRef.current = null; }
     wsRef.current?.close();
     wsRef.current = null;
     mediaRecorderRef.current?.stop();
@@ -366,6 +400,7 @@ export default function VoiceTriage() {
     setTriage(null);
     setFollowUpQ('');
     setTextInput('');
+    setInterimText('');
     setErrorMsg('');
     setDetectedLang('');
     setDetectedLangName('');
@@ -405,6 +440,11 @@ export default function VoiceTriage() {
           <p className="vt-hint">
             {appState === 'listening' ? 'Listening… release when done' : 'Hold to speak'}
           </p>
+          {appState === 'listening' && interimText && (
+            <div className="vt-interim-text" aria-live="polite" aria-label="Live transcript">
+              {interimText}
+            </div>
+          )}
         </div>
       ) : (
         <form className="vt-text-form" onSubmit={handleTextSubmit}>

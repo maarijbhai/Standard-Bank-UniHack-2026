@@ -510,3 +510,22 @@
   animation: spin 1s linear infinite;
   display: inline-block;
 }
+
+/* ------------------------------------------------------------------ */
+/* Live interim transcript display                                     */
+/* ------------------------------------------------------------------ */
+.vt-interim-text {
+  width: 100%;
+  max-width: 320px;
+  background: rgba(26, 122, 74, 0.08);
+  border: 1px dashed #1a7a4a;
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  font-size: 0.95rem;
+  color: #1a1a1a;
+  line-height: 1.5;
+  text-align: center;
+  font-style: italic;
+  min-height: 2.5rem;
+  transition: opacity 0.2s;
+}
