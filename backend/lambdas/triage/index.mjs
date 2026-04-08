@@ -1,11 +1,13 @@
 /**
  * Triage Lambda — POST /triage
  *
- * Flow: user text → Bedrock (Claude) → triage JSON → Polly (Ayanda) → base64 MP3
+ * Supports multi-turn conversation via optional `history` array.
+ * Request:  { text: string, history?: { role: 'user'|'assistant', content: string }[] }
+ * Response: { triage: TriageResult, audio: string (base64 mp3), audioFormat: 'mp3' }
  *
- * Privacy rules (enforced):
- *  - NEVER log user input text, Bedrock responses, or any PII to CloudWatch
- *  - Log operational metadata only (requestId, latency, error codes)
+ * Privacy rules:
+ *  - NEVER log user input text, Bedrock responses, or PII to CloudWatch
+ *  - Log operational metadata only (requestId, latency, urgency enum)
  */
 
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
@@ -16,44 +18,64 @@ const MODEL_ID = process.env.BEDROCK_MODEL_ID;
 if (!MODEL_ID) throw new Error('BEDROCK_MODEL_ID environment variable is not set');
 
 const bedrock = new BedrockRuntimeClient({ region: REGION });
-const polly = new PollyClient({ region: REGION });
+const polly   = new PollyClient({ region: REGION });
 
 // ---------------------------------------------------------------------------
-// System prompt — enforces strict JSON output and Grade 6 reading level
+// System prompt
 // ---------------------------------------------------------------------------
-const SYSTEM_PROMPT = `You are a South African public healthcare triage assistant.
-Analyse the patient's symptoms and respond ONLY with a valid JSON object — no markdown, no prose, no extra keys.
+const SYSTEM_PROMPT = `You are UmNyango, a compassionate South African public healthcare triage assistant.
+Your job is to help patients in South Africa understand their symptoms and find the right care.
 
-The JSON must match this exact structure:
+RESPONSE RULES — you MUST follow these exactly:
+1. Respond ONLY with a valid JSON object. No markdown fences, no prose outside the JSON.
+2. The JSON must match this exact structure:
 {
   "urgency": "emergency" | "urgent" | "routine",
   "clinic_type": "emergency_room" | "chc" | "clinic" | "pharmacy",
-  "summary": "<plain-language explanation, max 2 sentences, Grade 6 reading level>",
-  "benefits": ["<applicable SA programme e.g. Free ARVs, SASSA Relief>"],
-  "refer_emergency": true | false
+  "summary": "<2 sentences max, Grade 6 reading level, plain English>",
+  "benefits": ["<applicable SA programme>"],
+  "refer_emergency": true | false,
+  "needs_more_info": true | false,
+  "follow_up_question": "<one short question to ask the patient, or empty string if not needed>"
 }
 
-Rules:
-- Write the summary at a Grade 6 reading level. Use short words and simple sentences.
-- Use stigma-safe language. Say "wellness support" instead of "ARVs". Say "chest illness programme" instead of "TB treatment".
-- Never include the patient's words verbatim in the summary.
-- Never add fields outside the schema above.
-- Never wrap the JSON in markdown code fences.`;
+TRIAGE LOGIC:
+- Set needs_more_info=true and provide a follow_up_question when the symptoms are vague or could indicate multiple conditions of very different urgency (e.g. "I feel sick", "I have pain").
+- Set needs_more_info=false when you have enough information to triage confidently.
+- For chest pain, difficulty breathing, stroke symptoms, severe bleeding, or loss of consciousness: always urgency=emergency, refer_emergency=true, needs_more_info=false.
+- For high fever (>39°C), severe headache, persistent vomiting, or signs of infection: urgency=urgent.
+- For mild symptoms with no red flags: urgency=routine.
+
+FOLLOW-UP QUESTION RULES:
+- Ask only ONE question at a time.
+- Keep it short — under 15 words.
+- Ask about: duration, severity (1-10), location, associated symptoms, or relevant history.
+- Examples: "How long have you had this pain?" / "Is the pain sharp or dull?" / "Do you have a fever too?"
+- If the patient has already answered follow-up questions and you have enough context, set needs_more_info=false.
+
+LANGUAGE RULES:
+- Grade 6 reading level. Short sentences. Simple words.
+- Stigma-safe: say "wellness support" not "ARVs", "chest illness programme" not "TB treatment".
+- Never repeat the patient's exact words back in the summary.
+- Never add fields outside the schema.
+
+SA BENEFITS to consider: Free Emergency Care at Public Hospitals, SASSA Social Relief, Free ARV Wellness Support, Free TB/Chest Illness Programme, Child Support Grant, Disability Grant, Free Maternal Health Services.`;
 
 // ---------------------------------------------------------------------------
-// Bedrock invocation
+// Bedrock invocation — supports multi-turn history
 // ---------------------------------------------------------------------------
-async function invokeBedrock(userText) {
+async function invokeBedrock(userText, history = []) {
+  // Build message array: prior turns + new user message
+  const messages = [
+    ...history,
+    { role: 'user', content: userText },
+  ];
+
   const payload = {
     anthropic_version: 'bedrock-2023-05-31',
-    max_tokens: 512,
+    max_tokens: 600,
     system: SYSTEM_PROMPT,
-    messages: [
-      {
-        role: 'user',
-        content: userText,
-      },
-    ],
+    messages,
   };
 
   const command = new InvokeModelCommand({
@@ -63,65 +85,55 @@ async function invokeBedrock(userText) {
     body: JSON.stringify(payload),
   });
 
-  const raw = await bedrock.send(command);
+  const raw     = await bedrock.send(command);
   const decoded = JSON.parse(Buffer.from(raw.body).toString('utf-8'));
-
-  // Claude returns content as an array of blocks; grab the first text block
-  const text = decoded?.content?.[0]?.text;
+  const text    = decoded?.content?.[0]?.text;
   if (!text) throw new Error('BEDROCK_EMPTY_RESPONSE');
 
-  // Parse and validate the triage JSON
-  const triage = JSON.parse(text);
+  // Strip any accidental markdown fences before parsing
+  const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+  const triage  = JSON.parse(cleaned);
   validateTriage(triage);
-
   return triage;
 }
 
 function validateTriage(obj) {
-  const urgencies = ['emergency', 'urgent', 'routine'];
+  const urgencies   = ['emergency', 'urgent', 'routine'];
   const clinicTypes = ['emergency_room', 'chc', 'clinic', 'pharmacy'];
-
-  if (!urgencies.includes(obj.urgency)) throw new Error('INVALID_URGENCY');
-  if (!clinicTypes.includes(obj.clinic_type)) throw new Error('INVALID_CLINIC_TYPE');
-  if (typeof obj.summary !== 'string' || obj.summary.trim() === '') throw new Error('MISSING_SUMMARY');
-  if (!Array.isArray(obj.benefits)) throw new Error('INVALID_BENEFITS');
-  if (typeof obj.refer_emergency !== 'boolean') throw new Error('INVALID_REFER_EMERGENCY');
+  if (!urgencies.includes(obj.urgency))           throw new Error('INVALID_URGENCY');
+  if (!clinicTypes.includes(obj.clinic_type))     throw new Error('INVALID_CLINIC_TYPE');
+  if (typeof obj.summary !== 'string' || !obj.summary.trim()) throw new Error('MISSING_SUMMARY');
+  if (!Array.isArray(obj.benefits))               throw new Error('INVALID_BENEFITS');
+  if (typeof obj.refer_emergency !== 'boolean')   throw new Error('INVALID_REFER_EMERGENCY');
+  // Normalise optional fields
+  if (typeof obj.needs_more_info !== 'boolean')   obj.needs_more_info = false;
+  if (typeof obj.follow_up_question !== 'string') obj.follow_up_question = '';
 }
 
 // ---------------------------------------------------------------------------
-// Polly invocation
+// Polly — synthesise the text the user should hear
+// (summary + follow-up question if present)
 // ---------------------------------------------------------------------------
-async function synthesiseSpeech(summary) {
-  const command = new SynthesizeSpeechCommand({
-    Text: summary,
-    OutputFormat: 'mp3',
-    VoiceId: 'Ayanda',
-    Engine: 'neural',
-    LanguageCode: 'en-ZA',
-  });
-
-  let result;
-  try {
-    result = await polly.send(command);
-  } catch (pollyErr) {
-    // Ayanda neural may not be available in all regions — fall back to Joanna
-    console.error('polly_ayanda_failed', { code: pollyErr.name });
-    result = await polly.send(new SynthesizeSpeechCommand({
-      Text: summary,
+async function synthesiseSpeech(text) {
+  const tryPolly = async (voiceId, languageCode) => {
+    const result = await polly.send(new SynthesizeSpeechCommand({
+      Text: text,
       OutputFormat: 'mp3',
-      VoiceId: 'Joanna',
+      VoiceId: voiceId,
       Engine: 'neural',
-      LanguageCode: 'en-US',
+      LanguageCode: languageCode,
     }));
-  }
+    const chunks = [];
+    for await (const chunk of result.AudioStream) chunks.push(chunk);
+    return Buffer.concat(chunks).toString('base64');
+  };
 
-  // AudioStream is a readable stream — collect all chunks into a Buffer
-  const chunks = [];
-  for await (const chunk of result.AudioStream) {
-    chunks.push(chunk);
+  try {
+    return await tryPolly('Ayanda', 'en-ZA');
+  } catch {
+    console.error('polly_ayanda_failed_falling_back');
+    return await tryPolly('Joanna', 'en-US');
   }
-
-  return Buffer.concat(chunks).toString('base64');
 }
 
 // ---------------------------------------------------------------------------
@@ -134,51 +146,56 @@ export const handler = async (event, context) => {
   try {
     const body = JSON.parse(event.body ?? '{}');
 
-    if (!body.text || typeof body.text !== 'string' || body.text.trim() === '') {
+    if (!body.text || typeof body.text !== 'string' || !body.text.trim()) {
       return httpResponse(400, { error: 'Missing or empty required field: text' });
     }
 
-    // Step 1 — Bedrock triage
-    const triage = await invokeBedrock(body.text.trim());
+    // Validate history shape if provided
+    const history = Array.isArray(body.history) ? body.history : [];
 
-    // Step 2 — Polly audio synthesis from the triage summary
-    const audioBase64 = await synthesiseSpeech(triage.summary);
+    // Step 1 — Bedrock triage (with conversation history)
+    const triage = await invokeBedrock(body.text.trim(), history);
+
+    // Step 2 — Synthesise audio
+    // If a follow-up question is needed, speak the summary + question together
+    const spokenText = triage.needs_more_info && triage.follow_up_question
+      ? `${triage.summary} ${triage.follow_up_question}`
+      : triage.summary;
+
+    const audioBase64 = await synthesiseSpeech(spokenText);
 
     console.log('triage_request_completed', {
-      requestId: context.awsRequestId,
-      durationMs: Date.now() - startTime,
-      urgency: triage.urgency,          // safe to log — not PII
-      clinic_type: triage.clinic_type,  // safe to log — not PII
+      requestId:    context.awsRequestId,
+      durationMs:   Date.now() - startTime,
+      urgency:      triage.urgency,
+      needs_more_info: triage.needs_more_info,
     });
 
     return httpResponse(200, {
       triage,
-      audio: audioBase64,
+      audio:       audioBase64,
       audioFormat: 'mp3',
     });
   } catch (err) {
     console.error('triage_request_error', {
-      requestId: context.awsRequestId,
+      requestId:  context.awsRequestId,
       durationMs: Date.now() - startTime,
-      errorCode: err.name,
-      errorMessage: err.message, // TEMP: exposed for debugging — remove before final deploy
+      errorCode:  err.name,
+      errorMsg:   err.message, // TEMP debug — remove before final deploy
     });
 
     return httpResponse(500, {
-      error: 'Triage service unavailable. Please try again.',
-      debug_error: err.message, // TEMP: remove before final deploy
+      error:       'Triage service unavailable. Please try again.',
+      debug_error: err.message, // TEMP — remove before final deploy
     });
   }
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 function httpResponse(statusCode, body) {
   return {
     statusCode,
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type':                'application/json',
       'Access-Control-Allow-Origin': '*',
     },
     body: JSON.stringify(body),
