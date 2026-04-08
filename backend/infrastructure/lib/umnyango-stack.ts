@@ -132,11 +132,12 @@ export class UmNyangoStack extends cdk.Stack {
       memorySize: 512,
       environment: { AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1' },
       bundling: {
-        // externalModules:[] tells esbuild to bundle everything inline.
-        // The streaming SDK packages are resolved from the Lambda's own
-        // node_modules (backend/lambdas/transcribe/node_modules) at build time.
-        // This avoids the npm ci step that caused the lock file mismatch error.
-        externalModules: [],
+        // Bundle streaming SDK inline (not in Lambda runtime).
+        // DynamoDB clients ARE in the Node 20 runtime — mark as external.
+        externalModules: [
+          '@aws-sdk/client-dynamodb',
+          '@aws-sdk/lib-dynamodb',
+        ],
         format: lambdaNodejs.OutputFormat.ESM,
         target: 'node20',
         mainFields: ['module', 'main'],
