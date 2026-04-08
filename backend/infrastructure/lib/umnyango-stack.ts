@@ -226,6 +226,10 @@ export class UmNyangoStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    // Transcribe Lambda needs DynamoDB to store audio chunks between WS messages
+    sessionsTable.grantReadWriteData(transcribeFn);
+    transcribeFn.addEnvironment('DYNAMODB_TABLE', sessionsTable.tableName);
+
     // -------------------------------------------------------------------------
     // 5. WebSocket API (for real-time Transcribe streaming)
     // -------------------------------------------------------------------------

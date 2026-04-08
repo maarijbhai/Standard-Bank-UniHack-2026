@@ -219,8 +219,23 @@ export default function VoiceTriage() {
     }, 28000);
 
     ws.onopen = () => {
-      log('WS connected — sending audio');
-      ws.send(JSON.stringify({ action: 'transcribe', audio: audioBase64 }));
+      log('WS connected — sending audio in chunks');
+
+      // API Gateway WebSocket max message size is 128KB.
+      // Split the base64 audio into chunks and send sequentially.
+      const CHUNK_SIZE = 32768; // 32KB per chunk (safe under 128KB JSON envelope)
+      const totalChunks = Math.ceil(audioBase64.length / CHUNK_SIZE);
+      log(`Sending ${totalChunks} chunks (${audioBase64.length} chars total)`);
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = audioBase64.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        ws.send(JSON.stringify({
+          action:      'transcribe',
+          chunk,
+          chunkIndex:  i,
+          totalChunks,
+        }));
+      }
     };
 
     ws.onmessage = (event) => {
