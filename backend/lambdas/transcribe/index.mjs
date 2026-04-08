@@ -83,30 +83,40 @@ export const handler = async (event) => {
         chunkIndex,
         totalChunks,
         connectionId,
-        expiresAt:   Math.floor(Date.now() / 1000) + 300, // 5 min TTL
+        expiresAt:   Math.floor(Date.now() / 1000) + 300,
       },
     }));
 
+    // Acknowledge receipt so client sends the next chunk
+    await send(apigw, connectionId, { type: 'ack', chunkIndex });
+
     // Check if all chunks received
     if (chunkIndex < totalChunks - 1) {
-      // More chunks coming — acknowledge and wait
       return { statusCode: 200 };
     }
 
     // Last chunk received — reassemble all chunks
     console.log('all_chunks_received', { connectionId, totalChunks });
 
+    // Retry fetching chunks — earlier Lambda invocations may still be writing
+    const MAX_RETRIES = 5;
     const chunks = [];
     for (let i = 0; i < totalChunks; i++) {
-      const result = await ddb.send(new GetCommand({
-        TableName: TABLE,
-        Key: { sessionPin: `${key}_${i}` },
-      }));
-      if (!result.Item) {
-        await send(apigw, connectionId, { type: 'error', message: `Missing chunk ${i}` });
+      let item = null;
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const result = await ddb.send(new GetCommand({
+          TableName: TABLE,
+          Key: { sessionPin: `${key}_${i}` },
+        }));
+        if (result.Item) { item = result.Item; break; }
+        // Wait with backoff before retrying
+        await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
+      }
+      if (!item) {
+        await send(apigw, connectionId, { type: 'error', message: `Missing chunk ${i} after retries` });
         return { statusCode: 400 };
       }
-      chunks.push(result.Item.chunk);
+      chunks.push(item.chunk);
       // Clean up chunk
       await ddb.send(new DeleteCommand({ TableName: TABLE, Key: { sessionPin: `${key}_${i}` } }));
     }

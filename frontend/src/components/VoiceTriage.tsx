@@ -219,23 +219,31 @@ export default function VoiceTriage() {
     }, 28000);
 
     ws.onopen = () => {
-      log('WS connected — sending audio in chunks');
+      log('WS connected — sending audio in chunks sequentially');
 
       // API Gateway WebSocket max message size is 128KB.
-      // Split the base64 audio into chunks and send sequentially.
-      const CHUNK_SIZE = 32768; // 32KB per chunk (safe under 128KB JSON envelope)
+      // Send chunks one at a time, waiting for 'ack' before sending the next.
+      const CHUNK_SIZE  = 32768;
       const totalChunks = Math.ceil(audioBase64.length / CHUNK_SIZE);
       log(`Sending ${totalChunks} chunks (${audioBase64.length} chars total)`);
 
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = audioBase64.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      let currentChunk = 0;
+
+      const sendNextChunk = () => {
+        if (currentChunk >= totalChunks) return;
+        const chunk = audioBase64.slice(currentChunk * CHUNK_SIZE, (currentChunk + 1) * CHUNK_SIZE);
         ws.send(JSON.stringify({
           action:      'transcribe',
           chunk,
-          chunkIndex:  i,
+          chunkIndex:  currentChunk,
           totalChunks,
         }));
-      }
+        currentChunk++;
+      };
+
+      // Store sendNextChunk so onmessage can call it on 'ack'
+      (ws as WebSocket & { _sendNext?: () => void })._sendNext = sendNextChunk;
+      sendNextChunk(); // send first chunk immediately
     };
 
     ws.onmessage = (event) => {
@@ -243,7 +251,11 @@ export default function VoiceTriage() {
       try {
         const msg = JSON.parse(event.data as string);
 
-        if (msg.type === 'partial') {
+        if (msg.type === 'ack') {
+          // Server acknowledged a chunk — send the next one
+          const sendNext = (ws as WebSocket & { _sendNext?: () => void })._sendNext;
+          if (sendNext) sendNext();
+        } else if (msg.type === 'partial') {
           // Show live Transcribe partial results — these are in the detected language
           setInterimText(msg.text ?? '');
           if (msg.detectedLanguage) setInterimLang(msg.detectedLanguage);
