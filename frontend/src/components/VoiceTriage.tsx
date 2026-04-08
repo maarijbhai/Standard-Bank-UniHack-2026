@@ -25,14 +25,12 @@ interface TriageResult {
   needs_more_info: boolean;
   follow_up_question: string;
 }
-
-interface HistoryEntry  { role: 'user' | 'assistant'; content: string; }
-interface DebugEntry    { ts: string; msg: string; }
-
+interface HistoryEntry { role: 'user' | 'assistant'; content: string; }
+interface DebugEntry   { ts: string; msg: string; }
 type AppState = 'idle' | 'listening' | 'loading' | 'followup' | 'result' | 'error';
 
 // ---------------------------------------------------------------------------
-// Language config — translate targets only (SA + international)
+// Language / translate config
 // ---------------------------------------------------------------------------
 const TRANSLATE_LANGUAGES = [
   { code: 'en', name: 'English' },
@@ -48,7 +46,7 @@ const TRANSLATE_LANGUAGES = [
 ];
 
 // ---------------------------------------------------------------------------
-// Constants
+// UI constants
 // ---------------------------------------------------------------------------
 const URGENCY_LABEL: Record<TriageResult['urgency'], string> = {
   emergency: '🚨 Emergency', urgent: '⚠️ Urgent', routine: '✅ Routine',
@@ -67,28 +65,29 @@ const CLINIC_LABEL: Record<TriageResult['clinic_type'], string> = {
 // Component
 // ---------------------------------------------------------------------------
 export default function VoiceTriage() {
-  const [appState,          setAppState]          = useState<AppState>('idle');
-  const [triage,            setTriage]            = useState<TriageResult | null>(null);
-  const [followUpQ,         setFollowUpQ]         = useState('');
-  const [textInput,         setTextInput]         = useState('');
-  const [interimText,       setInterimText]       = useState(''); // live transcript while speaking
-  const [errorMsg,          setErrorMsg]          = useState('');
-  const [debugLog,          setDebugLog]          = useState<DebugEntry[]>([]);
-  const [showDebug,         setShowDebug]         = useState(false);
-  const [inputMode,         setInputMode]         = useState<'voice' | 'text'>('voice');
-  const [detectedLang,      setDetectedLang]      = useState('');
-  const [detectedLangName,  setDetectedLangName]  = useState('');
-  const [translateTarget,   setTranslateTarget]   = useState('');
-  const [translatedText,    setTranslatedText]    = useState('');
-  const [translating,       setTranslating]       = useState(false);
+  const [appState,         setAppState]         = useState<AppState>('idle');
+  const [triage,           setTriage]           = useState<TriageResult | null>(null);
+  const [followUpQ,        setFollowUpQ]        = useState('');
+  const [textInput,        setTextInput]        = useState('');
+  const [interimText,      setInterimText]      = useState('');   // live Transcribe partials
+  const [interimLang,      setInterimLang]      = useState('');   // detected lang from partials
+  const [errorMsg,         setErrorMsg]         = useState('');
+  const [debugLog,         setDebugLog]         = useState<DebugEntry[]>([]);
+  const [showDebug,        setShowDebug]        = useState(false);
+  const [inputMode,        setInputMode]        = useState<'voice' | 'text'>('voice');
+  const [detectedLang,     setDetectedLang]     = useState('');
+  const [detectedLangName, setDetectedLangName] = useState('');
+  const [translateTarget,  setTranslateTarget]  = useState('');
+  const [translatedText,   setTranslatedText]   = useState('');
+  const [translating,      setTranslating]      = useState(false);
 
-  const historyRef         = useRef<HistoryEntry[]>([]);
-  const detectedLangRef    = useRef('');
-  const mediaRecorderRef   = useRef<MediaRecorder | null>(null);
-  const audioChunksRef     = useRef<Blob[]>([]);
-  const wsRef              = useRef<WebSocket | null>(null);
-  const wsTimeoutRef       = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pressStartTimeRef  = useRef(0);
+  const historyRef        = useRef<HistoryEntry[]>([]);
+  const detectedLangRef   = useRef('');
+  const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
+  const audioChunksRef    = useRef<Blob[]>([]);
+  const wsRef             = useRef<WebSocket | null>(null);
+  const wsTimeoutRef      = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pressStartTimeRef = useRef(0);
 
   const log = useCallback((msg: string) => {
     const ts = new Date().toISOString().slice(11, 23);
@@ -100,14 +99,14 @@ export default function VoiceTriage() {
     log(`API_BASE = "${API_BASE}"`);
     log(`WS_URL = "${WS_URL}"`);
     if (!API_BASE) { setErrorMsg('VITE_API_URL not set. Check frontend/.env'); setAppState('error'); }
-    else if (!WS_URL) { log('WARN: VITE_TRANSCRIBE_WS_URL not set — voice input will be unavailable'); }
+    else if (!WS_URL) log('WARN: VITE_TRANSCRIBE_WS_URL not set — voice input unavailable');
   }, [log]);
 
   // -------------------------------------------------------------------------
-  // Core submit
+  // Core triage submit
   // -------------------------------------------------------------------------
   const submitText = useCallback(async (text: string) => {
-    log(`Submitting (${text.length} chars) | history=${historyRef.current.length} turns`);
+    log(`Submitting (${text.length} chars) | history=${historyRef.current.length}`);
     if (!text.trim()) { setAppState('idle'); return; }
 
     setAppState('loading');
@@ -136,8 +135,6 @@ export default function VoiceTriage() {
       if (!data.triage) throw new Error('Missing triage in response');
 
       const t = data.triage;
-
-      // Store detected language for follow-up turns
       if (data.detectedLanguage) {
         detectedLangRef.current = data.detectedLanguage;
         setDetectedLang(data.detectedLanguage);
@@ -177,15 +174,10 @@ export default function VoiceTriage() {
   // -------------------------------------------------------------------------
   const handleTranslate = useCallback(async (targetLang: string) => {
     if (!triage || !targetLang) return;
-    const textToTranslate = [
-      triage.summary,
-      triage.benefits.length ? triage.benefits.join('. ') : '',
-    ].filter(Boolean).join(' ');
-
+    const textToTranslate = [triage.summary, ...triage.benefits].join('. ');
     setTranslating(true);
     setTranslatedText('');
     log(`Translating to ${targetLang}`);
-
     try {
       const res  = await fetch(`${API_BASE}/translate`, {
         method:  'POST',
@@ -194,82 +186,106 @@ export default function VoiceTriage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-
       setTranslatedText(data.translatedText);
-      log(`Translation received (${data.translatedText.length} chars)`);
-
+      log(`Translation received`);
       if (data.audio) {
         const audio = new Audio(`data:audio/mp3;base64,${data.audio}`);
         audio.play().catch(e => log(`Translate audio blocked: ${e.message}`));
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`TRANSLATE ERROR: ${msg}`);
+      log(`TRANSLATE ERROR: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setTranslating(false);
     }
   }, [triage, log]);
 
   // -------------------------------------------------------------------------
-  // Voice recording — MediaRecorder → WebSocket → Transcribe Streaming
+  // WebSocket — sends audio, receives partial + final transcript from Transcribe
+  // -------------------------------------------------------------------------
+  const sendOverWebSocket = useCallback((audioBase64: string) => {
+    setAppState('loading');
+    setInterimText('');
+    setInterimLang('');
+    log('Connecting WebSocket…');
+
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    wsTimeoutRef.current = setTimeout(() => {
+      log('WS timeout — no response from transcribe Lambda');
+      ws.close();
+      setErrorMsg('Transcription timed out. Please try again.');
+      setAppState('error');
+    }, 28000);
+
+    ws.onopen = () => {
+      log('WS connected — sending audio');
+      ws.send(JSON.stringify({ action: 'transcribe', audio: audioBase64 }));
+    };
+
+    ws.onmessage = (event) => {
+      if (wsTimeoutRef.current) { clearTimeout(wsTimeoutRef.current); wsTimeoutRef.current = null; }
+      try {
+        const msg = JSON.parse(event.data as string);
+
+        if (msg.type === 'partial') {
+          // Show live Transcribe partial results — these are in the detected language
+          setInterimText(msg.text ?? '');
+          if (msg.detectedLanguage) setInterimLang(msg.detectedLanguage);
+          setAppState('listening'); // keep in listening state while partials arrive
+        } else if (msg.type === 'transcript') {
+          log(`Transcript received, lang=${msg.detectedLanguage}`);
+          ws.close();
+          wsRef.current = null;
+          setInterimText('');
+          if (msg.detectedLanguage) {
+            detectedLangRef.current = msg.detectedLanguage.split('-')[0];
+          }
+          submitText(msg.transcript);
+        } else if (msg.type === 'error') {
+          log(`WS error: ${msg.message}`);
+          setErrorMsg(msg.message ?? 'Transcription failed.');
+          setAppState('error');
+          ws.close();
+        }
+      } catch {
+        log('WS: failed to parse message');
+      }
+    };
+
+    ws.onerror = () => {
+      if (wsTimeoutRef.current) { clearTimeout(wsTimeoutRef.current); wsTimeoutRef.current = null; }
+      log('WS connection error');
+      setErrorMsg('Could not connect to transcription service. Check VITE_TRANSCRIBE_WS_URL.');
+      setAppState('error');
+    };
+
+    ws.onclose = () => { log('WS closed'); wsRef.current = null; };
+  }, [log, submitText]);
+
+  // -------------------------------------------------------------------------
+  // MediaRecorder — captures audio while button held
   // -------------------------------------------------------------------------
   const startListening = useCallback(async () => {
-    if (!WS_URL) {
-      setErrorMsg('VITE_TRANSCRIBE_WS_URL not set. Check frontend/.env');
-      setAppState('error');
-      return;
-    }
+    if (!WS_URL) { setErrorMsg('VITE_TRANSCRIBE_WS_URL not set.'); setAppState('error'); return; }
     if (!navigator.mediaDevices?.getUserMedia) {
-      setErrorMsg('Microphone access not supported in this browser.');
+      setErrorMsg('Microphone not supported in this browser.');
       setAppState('error');
       return;
     }
-
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      log('Mic access granted');
-
-      // ── Live interim display via browser STT (display only, not used for submission) ──
-      setInterimText('');
-      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        const SpeechAPI = (window as Window & { SpeechRecognition?: new () => SpeechRecognition }).SpeechRecognition
-          ?? (window as Window & { webkitSpeechRecognition?: new () => SpeechRecognition }).webkitSpeechRecognition;
-        if (SpeechAPI) {
-          const interim = new SpeechAPI();
-          interim.continuous     = true;
-          interim.interimResults = true;
-          interim.lang           = 'en-ZA';
-          interim.onresult = (e: SpeechRecognitionEvent) => {
-            let text = '';
-            for (let i = 0; i < e.results.length; i++) {
-              text += e.results[i][0].transcript;
-            }
-            setInterimText(text);
-          };
-          interim.onerror = () => { /* silent — display only */ };
-          interim.onend   = () => { /* silent */ };
-          try { interim.start(); } catch { /* ignore */ }
-          // Stop interim recognition when recorder stops
-          stream.getTracks()[0].addEventListener('ended', () => { try { interim.stop(); } catch { /* ignore */ } });
-        }
-      }
-
+      const stream   = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm';
+        ? 'audio/webm;codecs=opus' : 'audio/webm';
 
       const recorder = new MediaRecorder(stream, { mimeType });
       audioChunksRef.current = [];
 
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
 
       recorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
-        setInterimText('');
         log(`Recording stopped — ${audioChunksRef.current.length} chunks`);
-
         const blob        = new Blob(audioChunksRef.current, { type: mimeType });
         const arrayBuffer = await blob.arrayBuffer();
         const base64      = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
@@ -288,68 +304,7 @@ export default function VoiceTriage() {
       setErrorMsg(`Microphone error: ${msg}`);
       setAppState('error');
     }
-  }, [log]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const sendOverWebSocket = useCallback((audioBase64: string) => {
-    setAppState('loading');
-    log('Connecting WebSocket…');
-
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
-
-    // Safety timeout — if no response in 28s, surface an error
-    wsTimeoutRef.current = setTimeout(() => {
-      log('WS timeout — no response from transcribe Lambda');
-      ws.close();
-      setErrorMsg('Transcription timed out. Please try again.');
-      setAppState('error');
-    }, 28000);
-
-    ws.onopen = () => {
-      log('WS connected — sending audio');
-      ws.send(JSON.stringify({ action: 'transcribe', audio: audioBase64 }));
-    };
-
-    ws.onmessage = (event) => {
-      if (wsTimeoutRef.current) { clearTimeout(wsTimeoutRef.current); wsTimeoutRef.current = null; }
-      try {
-        const msg = JSON.parse(event.data);
-        log(`WS message: type=${msg.type}`);
-
-        if (msg.type === 'transcript') {
-          log(`Transcript received, lang=${msg.detectedLanguage}`);
-          ws.close();
-          wsRef.current = null;
-
-          if (msg.detectedLanguage) {
-            const langCode = msg.detectedLanguage.split('-')[0];
-            detectedLangRef.current = langCode;
-          }
-
-          submitText(msg.transcript);
-        } else if (msg.type === 'error') {
-          log(`WS error from server: ${msg.message}`);
-          setErrorMsg(msg.message ?? 'Transcription failed.');
-          setAppState('error');
-          ws.close();
-        }
-      } catch {
-        log('WS: failed to parse message');
-      }
-    };
-
-    ws.onerror = () => {
-      if (wsTimeoutRef.current) { clearTimeout(wsTimeoutRef.current); wsTimeoutRef.current = null; }
-      log('WS connection error');
-      setErrorMsg('Could not connect to transcription service. Check VITE_TRANSCRIBE_WS_URL.');
-      setAppState('error');
-    };
-
-    ws.onclose = () => {
-      log('WS closed');
-      wsRef.current = null;
-    };
-  }, [log, submitText]);
+  }, [log, sendOverWebSocket]);
 
   const stopListening = useCallback(() => {
     const held = Date.now() - pressStartTimeRef.current;
@@ -358,7 +313,7 @@ export default function VoiceTriage() {
       log('Too short — ignoring');
       mediaRecorderRef.current?.stop();
       mediaRecorderRef.current = null;
-      audioChunksRef.current = [];
+      audioChunksRef.current   = [];
       setAppState('idle');
       return;
     }
@@ -367,6 +322,9 @@ export default function VoiceTriage() {
     mediaRecorderRef.current = null;
   }, [log]);
 
+  // -------------------------------------------------------------------------
+  // Text input
+  // -------------------------------------------------------------------------
   const handleTextSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     const val = textInput.trim();
@@ -393,14 +351,15 @@ export default function VoiceTriage() {
     wsRef.current = null;
     mediaRecorderRef.current?.stop();
     mediaRecorderRef.current = null;
-    audioChunksRef.current = [];
-    historyRef.current      = [];
-    detectedLangRef.current = '';
+    audioChunksRef.current   = [];
+    historyRef.current       = [];
+    detectedLangRef.current  = '';
     setAppState('idle');
     setTriage(null);
     setFollowUpQ('');
     setTextInput('');
     setInterimText('');
+    setInterimLang('');
     setErrorMsg('');
     setDetectedLang('');
     setDetectedLangName('');
@@ -415,7 +374,6 @@ export default function VoiceTriage() {
   const renderInputPanel = (hint?: string) => (
     <div className="vt-input-panel">
       {hint && <p className="vt-followup-question" role="status">{hint}</p>}
-
       <div className="vt-mode-toggle" role="group" aria-label="Input mode">
         <button className={`vt-mode-btn ${inputMode === 'voice' ? 'vt-mode-btn--active' : ''}`} onClick={() => setInputMode('voice')}>🎙️ Voice</button>
         <button className={`vt-mode-btn ${inputMode === 'text'  ? 'vt-mode-btn--active' : ''}`} onClick={() => setInputMode('text')}>⌨️ Type</button>
@@ -441,7 +399,10 @@ export default function VoiceTriage() {
             {appState === 'listening' ? 'Listening… release when done' : 'Hold to speak'}
           </p>
           {appState === 'listening' && interimText && (
-            <div className="vt-interim-text" aria-live="polite" aria-label="Live transcript">
+            <div className="vt-interim-text" aria-live="polite">
+              {interimLang && interimLang !== 'en-ZA' && (
+                <span className="vt-interim-lang">🌍 {interimLang.split('-')[0].toUpperCase()}</span>
+              )}
               {interimText}
             </div>
           )}
@@ -472,27 +433,18 @@ export default function VoiceTriage() {
         <select
           className="vt-lang-select vt-translate-select"
           value={translateTarget}
-          onChange={e => {
-            const lang = e.target.value;
-            setTranslateTarget(lang);
-            setTranslatedText('');
-            if (lang) handleTranslate(lang);
-          }}
+          onChange={e => { const l = e.target.value; setTranslateTarget(l); setTranslatedText(''); if (l) handleTranslate(l); }}
           aria-label="Select translation language"
           disabled={translating}
         >
           <option value="">— choose language —</option>
-          {TRANSLATE_LANGUAGES.map(l => (
-            <option key={l.code} value={l.code}>{l.name}</option>
-          ))}
+          {TRANSLATE_LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
         </select>
         {translating && <span className="vt-translate-spinner" aria-label="Translating…">⏳</span>}
       </div>
       {translatedText && (
         <div className="vt-translated-text" aria-live="polite">
-          <p className="vt-label">
-            {TRANSLATE_LANGUAGES.find(l => l.code === translateTarget)?.name ?? ''} translation
-          </p>
+          <p className="vt-label">{TRANSLATE_LANGUAGES.find(l => l.code === translateTarget)?.name ?? ''} translation</p>
           <p>{translatedText}</p>
         </div>
       )}
@@ -510,7 +462,6 @@ export default function VoiceTriage() {
       </header>
 
       <main className="vt-main">
-
         {(appState === 'idle' || appState === 'listening') && renderInputPanel()}
 
         {appState === 'loading' && (

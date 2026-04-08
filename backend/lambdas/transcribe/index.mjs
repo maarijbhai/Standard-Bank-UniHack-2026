@@ -1,9 +1,14 @@
 /**
  * Transcribe Lambda — WebSocket routes: $connect, $disconnect, transcribe
  *
- * Receives a complete base64-encoded WebM/Opus audio blob from the client,
- * streams it through Amazon Transcribe Streaming with automatic language
- * identification (en-ZA, af-ZA, zu-ZA), and returns the transcript.
+ * Receives a complete base64-encoded WebM/Opus audio blob, streams it through
+ * Amazon Transcribe Streaming with automatic language identification, and sends
+ * partial results back over the WebSocket in real-time as they arrive.
+ *
+ * Messages sent to client:
+ *   { type: 'partial',    text: string, detectedLanguage: string }  — interim results
+ *   { type: 'transcript', transcript: string, detectedLanguage: string, detectedLanguageName: string }
+ *   { type: 'error',      message: string }
  *
  * Privacy: never log audio data, transcripts, or user identifiers.
  */
@@ -60,18 +65,15 @@ export const handler = async (event) => {
     console.log('transcribe_request', { connectionId, bytes: audioBuffer.length });
 
     try {
-      const { transcript, detectedLanguage } = await transcribeAudio(audioBuffer);
-      const langName = LANGUAGE_NAMES[detectedLanguage] ?? 'English';
+      const { transcript, detectedLanguage } =
+        await transcribeAudio(audioBuffer, apigw, connectionId);
 
-      console.log('transcribe_complete', {
-        connectionId,
-        detectedLanguage,
-        transcriptLength: transcript.length,
-      });
+      const langName = LANGUAGE_NAMES[detectedLanguage] ?? 'English';
+      console.log('transcribe_complete', { connectionId, detectedLanguage });
 
       await send(apigw, connectionId, {
         type:                 'transcript',
-        transcript:           transcript || '',
+        transcript:           transcript.trim(),
         detectedLanguage,
         detectedLanguageName: langName,
       });
@@ -79,11 +81,11 @@ export const handler = async (event) => {
       console.error('transcribe_error', {
         connectionId,
         errorName:    err.name,
-        errorMessage: err.message, // TEMP — remove before final deploy
+        errorMessage: err.message,
       });
       await send(apigw, connectionId, {
         type:    'error',
-        message: `Transcription failed: ${err.message}`, // TEMP
+        message: `Transcription failed: ${err.name} — ${err.message}`,
       });
     }
 
@@ -94,11 +96,11 @@ export const handler = async (event) => {
 };
 
 // ---------------------------------------------------------------------------
-// Transcribe Streaming with automatic language identification
+// Transcribe Streaming — streams partial results back over WebSocket
 // ---------------------------------------------------------------------------
-async function transcribeAudio(audioBuffer) {
-  const client    = new TranscribeStreamingClient({ region: REGION });
-  const CHUNK_SIZE = 32768; // 32 KB chunks
+async function transcribeAudio(audioBuffer, apigw, connectionId) {
+  const client     = new TranscribeStreamingClient({ region: REGION });
+  const CHUNK_SIZE = 32768;
 
   async function* audioStream() {
     for (let offset = 0; offset < audioBuffer.length; offset += CHUNK_SIZE) {
@@ -106,8 +108,7 @@ async function transcribeAudio(audioBuffer) {
     }
   }
 
-  // NOTE: When using IdentifyMultipleLanguages, do NOT include LanguageCode at all.
-  // LanguageOptions must be a comma-separated string of BCP-47 codes.
+  // IMPORTANT: Do NOT include LanguageCode when using IdentifyMultipleLanguages.
   const command = new StartStreamTranscriptionCommand({
     IdentifyMultipleLanguages: true,
     LanguageOptions:           'en-ZA,af-ZA,zu-ZA',
@@ -118,25 +119,48 @@ async function transcribeAudio(audioBuffer) {
 
   const response = await client.send(command);
 
-  let transcript       = '';
+  let finalTranscript  = '';
   let detectedLanguage = 'en-ZA';
+  let partialBuffer    = '';
 
   for await (const event of response.TranscriptResultStream) {
-    if (event.TranscriptEvent) {
-      const results = event.TranscriptEvent.Transcript?.Results ?? [];
-      for (const result of results) {
-        // Only use final (non-partial) results
-        if (!result.IsPartial) {
-          const text = result.Alternatives?.[0]?.Transcript ?? '';
-          if (text) transcript += text + ' ';
+    if (!event.TranscriptEvent) continue;
+
+    const results = event.TranscriptEvent.Transcript?.Results ?? [];
+
+    for (const result of results) {
+      const text = result.Alternatives?.[0]?.Transcript ?? '';
+
+      // Track detected language from any result
+      if (result.LanguageCode) detectedLanguage = result.LanguageCode;
+
+      if (result.IsPartial) {
+        // Send partial result to client for live display
+        if (text !== partialBuffer) {
+          partialBuffer = text;
+          await send(apigw, connectionId, {
+            type:             'partial',
+            text:             finalTranscript + ' ' + text,
+            detectedLanguage,
+          });
         }
-        // LanguageCode is on the result object when multi-language detection is on
-        if (result.LanguageCode) detectedLanguage = result.LanguageCode;
+      } else {
+        // Final result — append to transcript
+        if (text) {
+          finalTranscript += (finalTranscript ? ' ' : '') + text;
+          partialBuffer    = '';
+          // Send updated running transcript
+          await send(apigw, connectionId, {
+            type:             'partial',
+            text:             finalTranscript,
+            detectedLanguage,
+          });
+        }
       }
     }
   }
 
-  return { transcript: transcript.trim(), detectedLanguage };
+  return { transcript: finalTranscript, detectedLanguage };
 }
 
 async function send(apigw, connectionId, payload) {

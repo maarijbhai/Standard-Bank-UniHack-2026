@@ -529,3 +529,13 @@
   min-height: 2.5rem;
   transition: opacity 0.2s;
 }
+
+.vt-interim-lang {
+  display: block;
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 700;
+  color: #1a7a4a;
+  margin-bottom: 0.25rem;
+  letter-spacing: 0.05em;
+}

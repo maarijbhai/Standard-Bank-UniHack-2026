@@ -118,17 +118,30 @@ export class UmNyangoStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------------------------
-    // 3e. Transcribe Lambda (WebSocket handler)
+    // 3e. Transcribe Lambda (WebSocket handler) — MUST bundle streaming clients
+    // @aws-sdk/client-transcribe-streaming and @aws-sdk/client-apigatewaymanagementapi
+    // are NOT included in the Lambda Node 20 managed runtime, so they must be
+    // bundled into the deployment package rather than externalised.
     // -------------------------------------------------------------------------
     const transcribeFn = new lambdaNodejs.NodejsFunction(this, 'TranscribeFunction', {
       functionName: 'umnyango-transcribe',
       entry: path.join(lambdaRoot, 'transcribe/index.mjs'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      timeout: cdk.Duration.seconds(29), // WebSocket max integration timeout
+      timeout: cdk.Duration.seconds(29),
       memorySize: 512,
       environment: { AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1' },
-      bundling: sharedBundling,
+      bundling: {
+        // Bundle the streaming clients — they are NOT in the Lambda runtime
+        externalModules: [],
+        format: lambdaNodejs.OutputFormat.ESM,
+        target: 'node20',
+        mainFields: ['module', 'main'],
+        nodeModules: [
+          '@aws-sdk/client-transcribe-streaming',
+          '@aws-sdk/client-apigatewaymanagementapi',
+        ],
+      },
     });
 
     // -------------------------------------------------------------------------
