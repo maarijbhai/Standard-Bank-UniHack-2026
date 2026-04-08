@@ -1,0 +1,8 @@
+{
+  "name": "umnyango-lambda-clinics",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-location": "^3.0.0"
+  }
+}

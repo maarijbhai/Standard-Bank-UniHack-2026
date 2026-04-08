@@ -1,0 +1,9 @@
+{
+  "name": "umnyango-lambda-triage",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.0.0",
+    "@aws-sdk/client-polly": "^3.0.0"
+  }
+}

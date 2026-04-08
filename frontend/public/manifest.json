@@ -1,0 +1,10 @@
+{
+  "name": "UmNyango",
+  "short_name": "UmNyango",
+  "description": "Privacy-first voice health triage for South Africa",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1a7a4a",
+  "icons": []
+}

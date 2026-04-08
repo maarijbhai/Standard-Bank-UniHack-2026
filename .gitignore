@@ -1,0 +1,17 @@
+# Environment
+.env
+.env.local
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/lambdas/triage/node_modules/
+backend/lambdas/clinics/node_modules/
+backend/lambdas/session/node_modules/
+
+# Build output
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
