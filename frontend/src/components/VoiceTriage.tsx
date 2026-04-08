@@ -68,8 +68,9 @@ export default function VoiceTriage() {
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const transcriptRef = useRef('');
-  // Track whether we intentionally stopped recognition (vs browser auto-stop)
   const intentionalStopRef = useRef(false);
+  // Timestamp when hold started — used to enforce minimum hold duration
+  const pressStartTimeRef = useRef(0);
 
   const log = useCallback((msg: string) => {
     const ts = new Date().toISOString().slice(11, 23);
@@ -105,13 +106,15 @@ export default function VoiceTriage() {
 
     transcriptRef.current = '';
     intentionalStopRef.current = false;
+    pressStartTimeRef.current = Date.now();
 
     recognition.onstart = () => log('STT: recognition started');
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const chunk = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
+        const chunk = event.results[i][0].transcript.trim();
+        // Skip empty final results — browser sometimes fires these on quick taps
+        if (event.results[i].isFinal && chunk.length > 0) {
           transcriptRef.current += chunk + ' ';
           log(`STT final chunk: "${chunk}"`);
         }
@@ -149,7 +152,7 @@ export default function VoiceTriage() {
     log(`Submitting transcript: "${text}" (length=${text.length})`);
 
     if (!text) {
-      log('Empty transcript — returning to idle');
+      log('Empty transcript — nothing was spoken, returning to idle');
       setAppState('idle');
       return;
     }
@@ -208,6 +211,19 @@ export default function VoiceTriage() {
   }, [log]);
 
   const stopListeningAndSubmit = useCallback(async () => {
+    const heldMs = Date.now() - pressStartTimeRef.current;
+    log(`Button released after ${heldMs}ms`);
+
+    // If released in under 400ms the user tapped accidentally — ignore
+    if (heldMs < 400) {
+      log('Hold too short (<400ms) — ignoring, returning to idle');
+      intentionalStopRef.current = true;
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      setAppState('idle');
+      return;
+    }
+
     intentionalStopRef.current = true;
     recognitionRef.current?.stop();
     recognitionRef.current = null;
