@@ -73,7 +73,7 @@ const CLINIC_LABEL: Record<TriageResult['clinic_type'], string> = {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
-export default function VoiceTriage() {
+export default function VoiceTriage({ onComparePrices }: { onComparePrices?: (med: string) => void }) {
   const [appState,         setAppState]         = useState<AppState>('idle');
   const [triage,           setTriage]           = useState<TriageResult | null>(null);
   const [nearbyClinics,    setNearbyClinics]    = useState<NearbyClinic[]>([]);
@@ -647,7 +647,20 @@ export default function VoiceTriage() {
               <div className="vt-card">
                 <p className="vt-label">💊 Over-the-counter medicines</p>
                 <ul className="vt-benefits">
-                  {triage.otc_medicines.map(m => <li key={m}>{m}</li>)}
+                  {triage.otc_medicines.map(m => (
+                    <li key={m} className="vt-otc-item">
+                      <span>{m}</span>
+                      {onComparePrices && (
+                        <button
+                          className="vt-price-btn"
+                          onClick={() => onComparePrices(m)}
+                          title="Compare prices at nearby pharmacies"
+                        >
+                          💰 Prices
+                        </button>
+                      )}
+                    </li>
+                  ))}
                 </ul>
               </div>
             )}

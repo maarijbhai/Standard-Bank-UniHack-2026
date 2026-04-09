@@ -14,9 +14,9 @@
  * Privacy: never log user coordinates or medication names.
  */
 
-import { DynamoDBClient }                                    from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand }    from '@aws-sdk/lib-dynamodb';
-import { LocationClient, SearchPlaceIndexForTextCommand }    from '@aws-sdk/client-location';
+import { DynamoDBClient }                                              from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { LocationClient, SearchPlaceIndexForTextCommand }              from '@aws-sdk/client-location';
 
 const REGION                  = process.env.AWS_REGION          ?? 'us-east-1';
 const MEDICATION_PRICES_TABLE = process.env.MEDICATION_PRICES_TABLE ?? 'impilo-medication-prices';
@@ -74,15 +74,48 @@ export const handler = async (event, context) => {
     const lat = typeof userLat === 'number' && !isNaN(userLat) ? userLat : -33.9249;
     const lng = typeof userLng === 'number' && !isNaN(userLng) ? userLng : 18.4241;
 
-    // ── Step 1: Official price from DynamoDB ──────────────────────────────
-    const medResult = await ddb.send(new GetCommand({
-      TableName: MEDICATION_PRICES_TABLE,
-      Key:       { medicationName: medicationName.trim() },
-    }));
+    // ── Step 1: Official price — fuzzy case-insensitive lookup ──────────
+    // Strip dosage/description suffixes from OTC strings like
+    // "Paracetamol (500mg) - relieves throat pain" → "Paracetamol"
+    const rawName    = medicationName.trim();
+    const baseName   = rawName.split(/[\s(–-]/)[0].trim(); // first word before space/bracket/dash
+    const queryLower = rawName.toLowerCase();
 
-    const officialPrice = medResult.Item?.priceZAR ?? null;
-    const unit          = medResult.Item?.unit      ?? 'per pack';
-    const category      = medResult.Item?.category  ?? 'General';
+    // Try exact match first (fastest path)
+    let medItem = null;
+    const exactResult = await ddb.send(new GetCommand({
+      TableName: MEDICATION_PRICES_TABLE,
+      Key:       { medicationName: rawName },
+    }));
+    if (exactResult.Item) {
+      medItem = exactResult.Item;
+    } else {
+      // Scan and find best fuzzy match (case-insensitive contains)
+      const scan = await ddb.send(new ScanCommand({ TableName: MEDICATION_PRICES_TABLE }));
+      const items = scan.Items ?? [];
+
+      // Score each item: exact name match > starts-with > contains
+      let bestScore = -1;
+      for (const item of items) {
+        const itemLower = (item.medicationName ?? '').toLowerCase();
+        const baseItemLower = itemLower.split(/[\s(–-]/)[0];
+        let score = 0;
+        if (itemLower === queryLower)                          score = 100;
+        else if (itemLower.startsWith(queryLower))            score = 80;
+        else if (queryLower.startsWith(baseItemLower))        score = 70;
+        else if (itemLower.startsWith(baseName.toLowerCase())) score = 60;
+        else if (itemLower.includes(queryLower))              score = 40;
+        else if (queryLower.includes(baseItemLower))          score = 30;
+
+        if (score > bestScore) { bestScore = score; medItem = item; }
+      }
+      if (bestScore < 30) medItem = null; // no reasonable match
+    }
+
+    const officialPrice  = medItem?.priceZAR  ?? null;
+    const unit           = medItem?.unit       ?? 'per pack';
+    const category       = medItem?.category   ?? 'General';
+    const resolvedName   = medItem?.medicationName ?? rawName;
 
     // ── Step 2: Nearby pharmacies via Location Service ────────────────────
     const searchTerms = ['pharmacy', 'Clicks', 'Dis-Chem', 'Medirite', 'Clicks pharmacy'];
@@ -130,7 +163,7 @@ export const handler = async (event, context) => {
         // Check cache
         const cached = await ddb.send(new GetCommand({
           TableName: PHARMACY_PRICES_TABLE,
-          Key:       { pharmacyId: pharmacy.pharmacyId, medicationName: medicationName.trim() },
+          Key:       { pharmacyId: pharmacy.pharmacyId, medicationName: resolvedName },
         })).catch(() => null);
 
         let price;
@@ -142,16 +175,15 @@ export const handler = async (event, context) => {
         } else if (officialPrice !== null) {
           price       = stableVariance(pharmacy.pharmacyId, officialPrice);
           priceSource = 'estimated';
-          // Cache the estimated price for future calls
           await ddb.send(new PutCommand({
             TableName: PHARMACY_PRICES_TABLE,
             Item: {
               pharmacyId:     pharmacy.pharmacyId,
-              medicationName: medicationName.trim(),
+              medicationName: resolvedName,
               priceZAR:       price,
               priceSource:    'estimated',
               cachedAt:       Date.now(),
-              expiresAt:      Math.floor(Date.now() / 1000) + 86400, // 24h TTL
+              expiresAt:      Math.floor(Date.now() / 1000) + 86400,
             },
           })).catch(() => null);
         } else {
@@ -184,7 +216,7 @@ export const handler = async (event, context) => {
     });
 
     return httpResponse(200, {
-      medication:    medicationName.trim(),
+      medication:    resolvedName,
       officialPrice,
       unit,
       category,

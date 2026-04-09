@@ -5,19 +5,32 @@
  * sorted cheapest first, with distance and price source indicators.
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { usePrices, type PharmacyResult } from '../hooks/usePrices';
 import './PriceComparison.css';
 
-// Common SA medications for quick-select chips
 const QUICK_MEDS = [
   'Panado', 'Strepsils', 'Ibuprofen 200mg', 'Corenza C',
   'Buscopan', 'Imodium', 'Allergex', 'Vitamin C 500mg',
 ];
 
-export default function PriceComparison() {
-  const [query, setQuery]   = useState('');
+interface Props {
+  initialQuery?: string;
+  onQueryConsumed?: () => void;
+}
+
+export default function PriceComparison({ initialQuery, onQueryConsumed }: Props) {
+  const [query, setQuery] = useState('');
   const { compare, result, loading, error, reset } = usePrices();
+
+  // Auto-trigger when navigated from triage with a pre-filled medicine
+  useEffect(() => {
+    if (initialQuery && initialQuery.trim()) {
+      setQuery(initialQuery.trim());
+      compare(initialQuery.trim());
+      onQueryConsumed?.();
+    }
+  }, [initialQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

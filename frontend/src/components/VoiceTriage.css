@@ -721,3 +721,31 @@
   cursor: pointer;
   font-family: monospace;
 }
+
+/* OTC medicine list item with price compare button */
+.vt-otc-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+}
+
+.vt-price-btn {
+  flex-shrink: 0;
+  background: var(--brand-light);
+  border: 1px solid var(--brand-mid);
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--brand);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+
+.vt-price-btn:hover {
+  background: var(--brand-mid);
+}

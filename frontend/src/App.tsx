@@ -6,20 +6,26 @@ import './App.css';
 type Tab = 'triage' | 'prices';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('triage');
+  const [activeTab,    setActiveTab]    = useState<Tab>('triage');
+  const [priceQuery,   setPriceQuery]   = useState<string>('');
+
+  // Called from VoiceTriage when user taps "Compare prices" on an OTC medicine
+  const openPriceTab = (medicationName: string) => {
+    setPriceQuery(medicationName);
+    setActiveTab('prices');
+  };
 
   return (
     <div className="app-shell">
       <div className="app-content">
-        {activeTab === 'triage' && <VoiceTriage />}
+        {activeTab === 'triage' && <VoiceTriage onComparePrices={openPriceTab} />}
         {activeTab === 'prices' && (
           <div className="app-tab-page">
-            <PriceComparison />
+            <PriceComparison initialQuery={priceQuery} onQueryConsumed={() => setPriceQuery('')} />
           </div>
         )}
       </div>
 
-      {/* Bottom tab bar */}
       <nav className="app-tab-bar" role="tablist" aria-label="Main navigation">
         <button
           role="tab"
