@@ -53,6 +53,14 @@ export class UmNyangoStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    const skipQueueTable = new dynamodb.Table(this, 'SkipQueueBookingsTable', {
+      tableName:    'impilo-skipqueue-bookings',
+      partitionKey: { name: 'bookingId', type: dynamodb.AttributeType.STRING },
+      billingMode:  dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // -------------------------------------------------------------------------
     // 2. Shared Lambda defaults
     // -------------------------------------------------------------------------
@@ -67,11 +75,12 @@ export class UmNyangoStack extends cdk.Stack {
 
     const sharedEnv: Record<string, string> = {
       AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
-      DYNAMODB_TABLE:        sessionsTable.tableName,
-      BEDROCK_MODEL_ID:      bedrockModelId,
-      LOCATION_PLACE_INDEX:  placeIndex.indexName,
+      DYNAMODB_TABLE:          sessionsTable.tableName,
+      BEDROCK_MODEL_ID:        bedrockModelId,
+      LOCATION_PLACE_INDEX:    placeIndex.indexName,
       MEDICATION_PRICES_TABLE: medicationPricesTable.tableName,
       PHARMACY_PRICES_TABLE:   pharmacyPricesTable.tableName,
+      SKIPQUEUE_TABLE:         skipQueueTable.tableName,
     };
 
     const sharedBundling: lambdaNodejs.BundlingOptions = {
@@ -158,6 +167,20 @@ export class UmNyangoStack extends cdk.Stack {
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
+      environment: sharedEnv,
+      bundling: sharedBundling,
+    });
+
+    // -------------------------------------------------------------------------
+    // 3e-pre2. SkipQueue Lambda
+    // -------------------------------------------------------------------------
+    const skipQueueFn = new lambdaNodejs.NodejsFunction(this, 'SkipQueueFunction', {
+      functionName: 'impilo-skipqueue',
+      entry: path.join(lambdaRoot, 'skipqueue/index.mjs'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(10),
       memorySize: 256,
       environment: sharedEnv,
       bundling: sharedBundling,
@@ -275,6 +298,9 @@ export class UmNyangoStack extends cdk.Stack {
       resources: [`arn:aws:geo:${this.region}:${this.account}:place-index/${placeIndex.indexName}`],
     }));
 
+    // SkipQueue Lambda — read/write bookings table
+    skipQueueTable.grantReadWriteData(skipQueueFn);
+
     // Translate Lambda — Amazon Translate + Polly + Comprehend (for auto source detection)
     translateFn.addToRolePolicy(new iam.PolicyStatement({
       sid: 'TranslateLambdaPerms',
@@ -386,6 +412,13 @@ export class UmNyangoStack extends cdk.Stack {
     comparePricesResource.addMethod(
       'POST',
       new apigateway.LambdaIntegration(pharmaciesFn, { proxy: true }),
+    );
+
+    // POST /skipqueue
+    const skipQueueResource = api.root.addResource('skipqueue');
+    skipQueueResource.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(skipQueueFn, { proxy: true }),
     );
 
     // -------------------------------------------------------------------------

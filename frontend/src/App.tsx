@@ -1,15 +1,15 @@
 import { useState } from 'react';
 import VoiceTriage from './components/VoiceTriage';
 import PriceComparison from './components/PriceComparison';
+import SkipQueue from './components/SkipQueue';
 import './App.css';
 
-type Tab = 'triage' | 'prices';
+type Tab = 'triage' | 'prices' | 'skipqueue';
 
 export default function App() {
-  const [activeTab,    setActiveTab]    = useState<Tab>('triage');
-  const [priceQuery,   setPriceQuery]   = useState<string>('');
+  const [activeTab,  setActiveTab]  = useState<Tab>('triage');
+  const [priceQuery, setPriceQuery] = useState<string>('');
 
-  // Called from VoiceTriage when user taps "Compare prices" on an OTC medicine
   const openPriceTab = (medicationName: string) => {
     setPriceQuery(medicationName);
     setActiveTab('prices');
@@ -22,6 +22,11 @@ export default function App() {
         {activeTab === 'prices' && (
           <div className="app-tab-page">
             <PriceComparison initialQuery={priceQuery} onQueryConsumed={() => setPriceQuery('')} />
+          </div>
+        )}
+        {activeTab === 'skipqueue' && (
+          <div className="app-tab-page">
+            <SkipQueue />
           </div>
         )}
       </div>
@@ -44,6 +49,15 @@ export default function App() {
         >
           <span className="app-tab-icon">💊</span>
           <span className="app-tab-label">Prices</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={activeTab === 'skipqueue'}
+          className={`app-tab ${activeTab === 'skipqueue' ? 'app-tab--active' : ''}`}
+          onClick={() => setActiveTab('skipqueue')}
+        >
+          <span className="app-tab-icon">⏭️</span>
+          <span className="app-tab-label">SkipQueue</span>
         </button>
       </nav>
     </div>
