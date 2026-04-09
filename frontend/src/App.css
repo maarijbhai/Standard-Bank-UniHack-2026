@@ -1,0 +1,72 @@
+/* App shell — bottom tab navigation */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.app-content {
+  flex: 1;
+  overflow-y: auto;
+  /* leave room for the tab bar */
+  padding-bottom: 64px;
+}
+
+/* Tab page wrapper for non-triage tabs */
+.app-tab-page {
+  padding: 1.5rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ------------------------------------------------------------------ */
+/* Bottom tab bar                                                       */
+/* ------------------------------------------------------------------ */
+.app-tab-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 64px;
+  background: #fff;
+  border-top: 1px solid #E5E7EB;
+  display: flex;
+  box-shadow: 0 -2px 12px rgba(0,0,0,0.06);
+  z-index: 100;
+  /* safe area for notched phones */
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.app-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #9CA3AF;
+  transition: color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+}
+
+.app-tab--active {
+  color: #2563EB;
+}
+
+.app-tab-icon {
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.app-tab-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
