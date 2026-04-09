@@ -2,9 +2,10 @@ import { useState } from 'react';
 import VoiceTriage from './components/VoiceTriage';
 import PriceComparison from './components/PriceComparison';
 import SkipQueue from './components/SkipQueue';
+import ContinuityDashboard from './components/ContinuityDashboard';
 import './App.css';
 
-type Tab = 'triage' | 'prices' | 'skipqueue';
+type Tab = 'triage' | 'prices' | 'skipqueue' | 'continuity';
 
 export default function App() {
   const [activeTab,  setActiveTab]  = useState<Tab>('triage');
@@ -29,12 +30,16 @@ export default function App() {
             <SkipQueue />
           </div>
         )}
+        {activeTab === 'continuity' && (
+          <div className="app-tab-page">
+            <ContinuityDashboard />
+          </div>
+        )}
       </div>
 
       <nav className="app-tab-bar" role="tablist" aria-label="Main navigation">
         <button
-          role="tab"
-          aria-selected={activeTab === 'triage'}
+          role="tab" aria-selected={activeTab === 'triage'}
           className={`app-tab ${activeTab === 'triage' ? 'app-tab--active' : ''}`}
           onClick={() => setActiveTab('triage')}
         >
@@ -42,8 +47,7 @@ export default function App() {
           <span className="app-tab-label">Triage</span>
         </button>
         <button
-          role="tab"
-          aria-selected={activeTab === 'prices'}
+          role="tab" aria-selected={activeTab === 'prices'}
           className={`app-tab ${activeTab === 'prices' ? 'app-tab--active' : ''}`}
           onClick={() => setActiveTab('prices')}
         >
@@ -51,13 +55,20 @@ export default function App() {
           <span className="app-tab-label">Prices</span>
         </button>
         <button
-          role="tab"
-          aria-selected={activeTab === 'skipqueue'}
+          role="tab" aria-selected={activeTab === 'skipqueue'}
           className={`app-tab ${activeTab === 'skipqueue' ? 'app-tab--active' : ''}`}
           onClick={() => setActiveTab('skipqueue')}
         >
           <span className="app-tab-icon">⏭️</span>
           <span className="app-tab-label">SkipQueue</span>
+        </button>
+        <button
+          role="tab" aria-selected={activeTab === 'continuity'}
+          className={`app-tab ${activeTab === 'continuity' ? 'app-tab--active' : ''}`}
+          onClick={() => setActiveTab('continuity')}
+        >
+          <span className="app-tab-icon">📈</span>
+          <span className="app-tab-label">My Health</span>
         </button>
       </nav>
     </div>
