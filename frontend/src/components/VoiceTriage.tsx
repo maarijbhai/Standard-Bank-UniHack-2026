@@ -35,7 +35,6 @@ interface NearbyClinic {
   phone: string;
 }
 interface HistoryEntry { role: 'user' | 'assistant'; content: string; }
-interface DebugEntry   { ts: string; msg: string; }
 type AppState = 'idle' | 'listening' | 'loading' | 'followup' | 'result' | 'error';
 
 // ---------------------------------------------------------------------------
@@ -83,8 +82,6 @@ export default function VoiceTriage({ onComparePrices }: { onComparePrices?: (me
   const [interimText,      setInterimText]      = useState('');   // live Transcribe partials
   const [interimLang,      setInterimLang]      = useState('');   // detected lang from partials
   const [errorMsg,         setErrorMsg]         = useState('');
-  const [debugLog,         setDebugLog]         = useState<DebugEntry[]>([]);
-  const [showDebug,        setShowDebug]        = useState(false);
   const [inputMode,        setInputMode]        = useState<'voice' | 'text'>('voice');
   const [detectedLang,     setDetectedLang]     = useState('');
   const [detectedLangName, setDetectedLangName] = useState('');
@@ -103,8 +100,7 @@ export default function VoiceTriage({ onComparePrices }: { onComparePrices?: (me
 
   const log = useCallback((msg: string) => {
     const ts = new Date().toISOString().slice(11, 23);
-    console.log(`[UmNyango ${ts}] ${msg}`);
-    setDebugLog(prev => [...prev.slice(-29), { ts, msg }]);
+    console.log(`[ImpiloCare ${ts}] ${msg}`);
   }, []);
 
   useEffect(() => {
@@ -704,32 +700,6 @@ export default function VoiceTriage({ onComparePrices }: { onComparePrices?: (me
             <button className="vt-reset-btn" onClick={handleReset}>Try again</button>
           </div>
         )}
-
-        {/* DEBUG PANEL */}
-        <div className="vt-debug">
-          <button className="vt-debug-toggle" onClick={() => setShowDebug(p => !p)}>
-            🛠 Debug {showDebug ? '▲' : '▼'}
-          </button>
-          {showDebug && (
-            <div className="vt-debug-body">
-              <div className="vt-debug-row"><span className="vt-debug-label">API_BASE</span><span className={`vt-debug-val ${!API_BASE ? 'vt-debug-err' : ''}`}>{API_BASE || '⚠ NOT SET'}</span></div>
-              <div className="vt-debug-row"><span className="vt-debug-label">WS_URL</span><span className={`vt-debug-val ${!WS_URL ? 'vt-debug-err' : ''}`}>{WS_URL ? '✓ set' : '⚠ NOT SET'}</span></div>
-              <div className="vt-debug-row"><span className="vt-debug-label">State</span><span className="vt-debug-val">{appState}</span></div>
-              <div className="vt-debug-row"><span className="vt-debug-label">Lang</span><span className="vt-debug-val">{detectedLangName || '—'} ({detectedLang || '—'})</span></div>
-              <div className="vt-debug-row"><span className="vt-debug-label">History</span><span className="vt-debug-val">{historyRef.current.length} turns</span></div>
-              <div className="vt-debug-log">
-                {debugLog.length === 0
-                  ? <span className="vt-debug-empty">No events yet</span>
-                  : [...debugLog].reverse().map((e, i) => (
-                    <div key={i} className="vt-debug-entry">
-                      <span className="vt-debug-ts">{e.ts}</span><span>{e.msg}</span>
-                    </div>
-                  ))}
-              </div>
-              <button className="vt-debug-clear" onClick={() => setDebugLog([])}>Clear</button>
-            </div>
-          )}
-        </div>
       </main>
     </div>
   );
