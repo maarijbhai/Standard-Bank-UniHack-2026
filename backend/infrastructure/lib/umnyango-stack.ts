@@ -36,6 +36,24 @@ export class UmNyangoStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------------------------
+    // 1c. DynamoDB — medication price tables
+    // -------------------------------------------------------------------------
+    const medicationPricesTable = new dynamodb.Table(this, 'MedicationPricesTable', {
+      tableName:    'impilo-medication-prices',
+      partitionKey: { name: 'medicationName', type: dynamodb.AttributeType.STRING },
+      billingMode:  dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const pharmacyPricesTable = new dynamodb.Table(this, 'PharmacyPricesTable', {
+      tableName:    'impilo-pharmacy-prices',
+      partitionKey: { name: 'pharmacyId',     type: dynamodb.AttributeType.STRING },
+      sortKey:      { name: 'medicationName', type: dynamodb.AttributeType.STRING },
+      billingMode:  dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // -------------------------------------------------------------------------
     // 2. Shared Lambda defaults
     // -------------------------------------------------------------------------
     const lambdaRoot = path.resolve(__dirname, '../../lambdas');
@@ -49,9 +67,11 @@ export class UmNyangoStack extends cdk.Stack {
 
     const sharedEnv: Record<string, string> = {
       AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1',
-      DYNAMODB_TABLE: sessionsTable.tableName,
-      BEDROCK_MODEL_ID: bedrockModelId,
-      LOCATION_PLACE_INDEX: placeIndex.indexName,
+      DYNAMODB_TABLE:        sessionsTable.tableName,
+      BEDROCK_MODEL_ID:      bedrockModelId,
+      LOCATION_PLACE_INDEX:  placeIndex.indexName,
+      MEDICATION_PRICES_TABLE: medicationPricesTable.tableName,
+      PHARMACY_PRICES_TABLE:   pharmacyPricesTable.tableName,
     };
 
     const sharedBundling: lambdaNodejs.BundlingOptions = {
@@ -130,7 +150,21 @@ export class UmNyangoStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------------------------
-    // 3e. Transcribe Lambda (WebSocket handler) — MUST bundle streaming clients
+    // 3e-pre. Pharmacies / Price Comparison Lambda
+    // -------------------------------------------------------------------------
+    const pharmaciesFn = new lambdaNodejs.NodejsFunction(this, 'PharmaciesFunction', {
+      functionName: 'impilo-pharmacies',
+      entry: path.join(lambdaRoot, 'pharmacies/index.mjs'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
+      environment: sharedEnv,
+      bundling: sharedBundling,
+    });
+
+    // -------------------------------------------------------------------------
+    // 3e. Transcribe Lambda (WebSocket handler)
     // @aws-sdk/client-transcribe-streaming and @aws-sdk/client-apigatewaymanagementapi
     // are NOT included in the Lambda Node 20 managed runtime, so they must be
     // bundled into the deployment package rather than externalised.
@@ -228,6 +262,16 @@ export class UmNyangoStack extends cdk.Stack {
       sid: 'LocationSearch',
       effect: iam.Effect.ALLOW,
       actions: ['geo:SearchPlaceIndexForText', 'geo:SearchPlaceIndexForPosition'],
+      resources: [`arn:aws:geo:${this.region}:${this.account}:place-index/${placeIndex.indexName}`],
+    }));
+
+    // Pharmacies Lambda — read both price tables + Location Service search
+    medicationPricesTable.grantReadData(pharmaciesFn);
+    pharmacyPricesTable.grantReadWriteData(pharmaciesFn);
+    pharmaciesFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'PharmaciesLocationSearch',
+      effect: iam.Effect.ALLOW,
+      actions: ['geo:SearchPlaceIndexForText'],
       resources: [`arn:aws:geo:${this.region}:${this.account}:place-index/${placeIndex.indexName}`],
     }));
 
@@ -335,6 +379,13 @@ export class UmNyangoStack extends cdk.Stack {
     translateResource.addMethod(
       'POST',
       new apigateway.LambdaIntegration(translateFn, { proxy: true }),
+    );
+
+    // POST /compare-prices
+    const comparePricesResource = api.root.addResource('compare-prices');
+    comparePricesResource.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(pharmaciesFn, { proxy: true }),
     );
 
     // -------------------------------------------------------------------------
